@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# 자동 다운로드되는 외부 바이너리 (깃에 올리지 않음)
+ffmpeg.exe
+ffmpeg-tmp.zip
+
+# 로그
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
