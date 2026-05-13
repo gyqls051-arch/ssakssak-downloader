@@ -12,12 +12,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import logging.handlers
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -33,6 +35,13 @@ from tkinter import ttk, filedialog, messagebox
 from typing import Callable
 
 import yt_dlp
+
+# Pillow 는 썸네일 표시에만 사용. 없어도 앱은 동작 (회색 박스로 표시).
+try:
+    from PIL import Image, ImageTk  # type: ignore
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 
 # ============================================================
@@ -63,8 +72,8 @@ QUALITY_TABLE: list[tuple[str, int | None]] = [
 
 # 출력 포맷 라벨 → 컨테이너
 FORMAT_TABLE: list[tuple[str, str]] = [
-    ("MKV (최고화질·무손실)", "mkv"),
     ("MP4 (호환성 우선)",    "mp4"),
+    ("MKV (최고화질·무손실)", "mkv"),
 ]
 
 # 유튜브 URL 인식. youtube.com/watch, youtu.be, shorts, live, embed, music 까지 커버.
@@ -526,6 +535,129 @@ def apply_theme(root: tk.Tk) -> None:
     style.configure("Hint.TLabel", foreground=COLOR_MUTED, font=(fam, 9))
 
 
+class HistoryItemFrame(ttk.Frame):
+    """다운로드 한 건(영상 1개)을 표시하는 카드.
+    상태: preparing → downloading → merging → done / error."""
+
+    THUMB_W = 132
+    THUMB_H = 74   # 16:9
+
+    def __init__(self, parent: tk.Misc, vid: str, title: str):
+        super().__init__(parent)
+        self.vid = vid
+        self.file_path: str | None = None
+        self._photo = None  # PhotoImage 참조 유지 (GC 방지)
+
+        self.columnconfigure(1, weight=1)
+
+        # 좌측: 썸네일 자리 (Canvas 로 픽셀 박스 + 이미지 호스팅)
+        self.thumb_canvas = tk.Canvas(
+            self, width=self.THUMB_W, height=self.THUMB_H,
+            bg="#dcdcdc", highlightthickness=0,
+        )
+        self.thumb_canvas.grid(row=0, column=0, rowspan=2, padx=(10, 14), pady=10)
+
+        # 가운데: 제목 + 상태 메타
+        fam = preferred_font_family()
+        self.title_lbl = ttk.Label(
+            self, text=title or "(분석 중...)",
+            font=(fam, 10, "bold"),
+            wraplength=420, justify="left", anchor="w",
+        )
+        self.title_lbl.grid(row=0, column=1, sticky="ew", pady=(12, 0), padx=(0, 12))
+
+        self.meta_lbl = ttk.Label(self, text="대기 중...", foreground=COLOR_MUTED)
+        self.meta_lbl.grid(row=1, column=1, sticky="w", pady=(2, 12), padx=(0, 12))
+
+        # 우측: 진행률 또는 액션 버튼
+        self.progress = ttk.Progressbar(
+            self, mode="determinate", maximum=100, length=140,
+        )
+        # 처음엔 진행률 표시 (다운로드 중)
+        self.progress.grid(row=0, column=2, rowspan=2, padx=(0, 14), sticky="e")
+
+        self.action_frame = ttk.Frame(self)
+        # 완료/실패 시에만 grid
+
+    # ---------- 외부 호출 ----------
+
+    def set_thumbnail(self, photo) -> None:
+        self._photo = photo
+        self.thumb_canvas.delete("all")
+        self.thumb_canvas.create_image(self.THUMB_W // 2, self.THUMB_H // 2, image=photo)
+
+    def set_title(self, title: str) -> None:
+        if title:
+            self.title_lbl.configure(text=title)
+
+    def set_downloading(self, pct: float, done: int, total: int, speed: float) -> None:
+        self.progress.configure(value=pct)
+        total_mb = total / 1024 / 1024 if total else 0
+        done_mb = done / 1024 / 1024
+        spd_mb = speed / 1024 / 1024 if speed else 0
+        self.meta_lbl.configure(
+            text=f"⏳ {pct:.0f}%  ·  {done_mb:.1f} / {total_mb:.1f} MB  ·  {spd_mb:.2f} MB/s"
+        )
+
+    def set_merging(self, file_path: str) -> None:
+        self.file_path = file_path
+        self.progress.configure(value=99)
+        self.meta_lbl.configure(text="🔄 영상+음성 합치는 중...")
+
+    def set_done(self) -> None:
+        self.progress.grid_forget()
+        size_text = ""
+        if self.file_path:
+            try:
+                size_mb = Path(self.file_path).stat().st_size / 1024 / 1024
+                size_text = f"  ·  {size_mb:.1f} MB"
+            except OSError:
+                pass
+            self.meta_lbl.configure(
+                text=f"✓ 완료{size_text}  ·  {Path(self.file_path).name}",
+                foreground=COLOR_SUCCESS,
+            )
+        else:
+            self.meta_lbl.configure(text="✓ 완료", foreground=COLOR_SUCCESS)
+
+        # 액션 버튼
+        for child in self.action_frame.winfo_children():
+            child.destroy()
+        ttk.Button(self.action_frame, text="폴더 열기",
+                   command=self._open_in_folder).pack(side="top", pady=(0, 4))
+        ttk.Button(self.action_frame, text="재생",
+                   command=self._play_file).pack(side="top")
+        self.action_frame.grid(row=0, column=2, rowspan=2, padx=(0, 14), sticky="e")
+
+    def set_error(self, err: str) -> None:
+        self.progress.grid_forget()
+        short = (err or "알 수 없는 오류").splitlines()[-1][:120]
+        self.meta_lbl.configure(text=f"✗ 실패: {short}", foreground=COLOR_DANGER)
+
+    # ---------- 내부 ----------
+
+    def _open_in_folder(self) -> None:
+        if not self.file_path:
+            return
+        try:
+            # 파일을 선택한 상태로 탐색기 열기
+            subprocess.run(
+                ["explorer", f"/select,{self.file_path}"], check=False,
+            )
+        except Exception:
+            try:
+                os.startfile(Path(self.file_path).parent)
+            except OSError:
+                pass
+
+    def _play_file(self) -> None:
+        if self.file_path and Path(self.file_path).exists():
+            try:
+                os.startfile(self.file_path)
+            except OSError:
+                pass
+
+
 class FfmpegInstallDialog(tk.Toplevel):
     """ffmpeg 다운로드/설치 진행률 모달.
     다운로드 중에는 닫을 수 없도록 잠그고, 완료/실패 후에만 닫기 허용."""
@@ -613,6 +745,11 @@ class DownloaderApp:
         self._info_visible = False
         self._progress_visible = False
         self._ffmpeg_prompt_handled = False
+
+        # 다운로드 히스토리: 최신순으로 쌓이는 4K Downloader 식 카드 리스트
+        self.history_widgets: dict[str, HistoryItemFrame] = {}
+        self.history_order: list[str] = []   # vid 들, 새 항목이 앞에 insert(0, ...)
+        self.current_dl_vid: str | None = None
 
         self._build_ui()
         self._tick_clipboard()
@@ -713,7 +850,8 @@ class DownloaderApp:
 
         # 옵션
         ttk.Label(inner, text="화질").grid(row=2, column=0, sticky="w", pady=6)
-        self.quality_var = tk.StringVar(value="최고화질 (자동)")
+        # 기본 화질: 프리미어 호환성 우선 → 1080p (FHD)
+        self.quality_var = tk.StringVar(value="1080p (FHD)")
         self.quality_combo = ttk.Combobox(
             inner, textvariable=self.quality_var,
             values=[label for label, _ in QUALITY_TABLE],
@@ -748,34 +886,54 @@ class DownloaderApp:
         self.download_btn.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(20, 0), ipady=6)
 
     def _build_progress_card(self) -> None:
-        card = ttk.LabelFrame(self.container, text="  진행 상황  ")
+        """다운로드 목록 카드 — 4K Downloader 식 항목 스택, 최신이 위."""
+        card = ttk.LabelFrame(self.container, text="  다운로드 목록  ")
         self.progress_card = card
 
         inner = ttk.Frame(card)
-        inner.pack(fill="both", expand=True, padx=PAD_CARD, pady=16)
+        inner.pack(fill="both", expand=True, padx=PAD_CARD, pady=14)
         inner.columnconfigure(0, weight=1)
-        inner.rowconfigure(2, weight=1)
+        inner.rowconfigure(0, weight=1)
 
-        self.progress = ttk.Progressbar(inner, mode="determinate", maximum=100)
-        self.progress.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-
-        self.status_var = tk.StringVar(value="대기 중")
-        ttk.Label(inner, textvariable=self.status_var,
-                  style="CardMuted.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 10))
-
-        log_wrap = ttk.Frame(inner)
-        log_wrap.grid(row=2, column=0, sticky="nsew")
-        self.log_view = tk.Text(
-            log_wrap, height=6, wrap="word", state="disabled",
-            bg=COLOR_LOG_BG, fg="#1c1c1c", relief="flat",
-            font=("Consolas", 9), padx=10, pady=8,
-            borderwidth=0, highlightthickness=1,
-            highlightbackground=COLOR_LOG_BORDER,
+        # 스크롤 가능 영역: Canvas + 내부 Frame (tkinter 표준 패턴)
+        self.history_canvas = tk.Canvas(
+            inner, highlightthickness=0, bg=COLOR_LOG_BG,
         )
-        scroll = ttk.Scrollbar(log_wrap, command=self.log_view.yview)
-        self.log_view.configure(yscrollcommand=scroll.set)
-        self.log_view.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        self.history_canvas.grid(row=0, column=0, sticky="nsew")
+
+        vscroll = ttk.Scrollbar(inner, orient="vertical",
+                                command=self.history_canvas.yview)
+        vscroll.grid(row=0, column=1, sticky="ns")
+        self.history_canvas.configure(yscrollcommand=vscroll.set)
+
+        self.history_inner = tk.Frame(self.history_canvas, bg=COLOR_LOG_BG)
+        self.history_window = self.history_canvas.create_window(
+            (0, 0), window=self.history_inner, anchor="nw",
+        )
+
+        def _on_inner_configure(_e: object) -> None:
+            self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all"))
+
+        def _on_canvas_configure(e: tk.Event) -> None:
+            self.history_canvas.itemconfigure(self.history_window, width=e.width)
+
+        self.history_inner.bind("<Configure>", _on_inner_configure)
+        self.history_canvas.bind("<Configure>", _on_canvas_configure)
+
+        # 마우스휠 스크롤
+        def _on_wheel(e: tk.Event) -> None:
+            self.history_canvas.yview_scroll(int(-e.delta / 120), "units")
+        self.history_canvas.bind("<MouseWheel>", _on_wheel)
+        self.history_inner.bind("<MouseWheel>", _on_wheel)
+
+        # 빈 상태 안내
+        self.history_empty_lbl = tk.Label(
+            self.history_inner,
+            text="다운로드를 시작하면 여기에 영상이 쌓입니다.",
+            fg=COLOR_MUTED, bg=COLOR_LOG_BG,
+            font=(preferred_font_family(), 10),
+        )
+        self.history_empty_lbl.pack(pady=32)
 
     # ---------------- 카드 표시 제어 ----------------
 
@@ -818,15 +976,6 @@ class DownloaderApp:
         except OSError:
             log.exception("open folder failed")
             messagebox.showerror(APP_TITLE, "폴더를 열 수 없습니다.")
-
-    def _append_log(self, msg: str) -> None:
-        self.log_view.configure(state="normal")
-        self.log_view.insert("end", msg + "\n")
-        self.log_view.see("end")
-        self.log_view.configure(state="disabled")
-
-    def _set_status(self, msg: str) -> None:
-        self.status_var.set(msg)
 
     # ---------------- URL 분석 ----------------
 
@@ -877,7 +1026,10 @@ class DownloaderApp:
                       if h is None or h == -1 or h <= max_h]
             self.quality_combo.configure(values=labels)
             if self.quality_var.get() not in labels:
-                self.quality_var.set("최고화질 (자동)")
+                # 1080p 가능하면 우선, 아니면 최고화질
+                self.quality_var.set(
+                    "1080p (FHD)" if "1080p (FHD)" in labels else "최고화질 (자동)"
+                )
         else:
             self.quality_combo.configure(values=[label for label, _ in QUALITY_TABLE])
 
@@ -927,7 +1079,7 @@ class DownloaderApp:
         quality_label = self.quality_var.get()
         is_audio_only = "음성만" in quality_label
         height = dict(QUALITY_TABLE).get(quality_label)
-        container = dict(FORMAT_TABLE).get(self.format_var.get(), "mkv")
+        container = dict(FORMAT_TABLE).get(self.format_var.get(), "mp4")
         format_str = "bestaudio/best" if is_audio_only else build_format_selector(height, container)
 
         if not self.ffmpeg_dir and not is_audio_only:
@@ -939,12 +1091,9 @@ class DownloaderApp:
                 return
 
         self.is_downloading = True
+        self.current_dl_vid = None
         self.download_btn.configure(state="disabled", text="다운로드 중...")
         self._show_progress(True)
-        self.progress.configure(value=0)
-        self._set_status("준비 중...")
-        self._append_log(f"--- 시작: {url} ---")
-        self._append_log(f"  포맷: {format_str}")
         log.info("download start url=%s format=%s", url, format_str)
 
         cfg = DownloadConfig(
@@ -955,39 +1104,100 @@ class DownloaderApp:
         threading.Thread(target=self.downloader.run, args=(cfg,), daemon=True).start()
 
     def _on_progress(self, d: dict) -> None:
+        """yt-dlp progress hook. 모든 갱신은 UI 스레드(root.after)로 위임."""
+        info = d.get("info_dict") or {}
+        vid = str(info.get("id") or "")
+        if not vid:
+            return
         status = d.get("status")
+
         if status == "downloading":
+            title = str(info.get("title") or "")
+            thumb_url = str(info.get("thumbnail") or "")
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             done = d.get("downloaded_bytes", 0)
             speed = d.get("speed") or 0
-            eta = d.get("eta") or 0
             pct = (done / total * 100) if total else 0
-
-            def _update() -> None:
-                self.progress.configure(value=pct)
-                self._set_status(
-                    f"{pct:5.1f}%  ·  {done/1024/1024:.1f} / {total/1024/1024:.1f} MB"
-                    f"  ·  {speed/1024/1024:.2f} MB/s  ·  남은 시간 {int(eta)}s"
-                )
-            self.root.after(0, _update)
+            self.root.after(
+                0, self._update_history_progress,
+                vid, title, thumb_url, pct, done, total, speed,
+            )
         elif status == "finished":
             fname = d.get("filename", "")
-            self.root.after(0, self._append_log, f"[완료] {Path(fname).name}")
-            self.root.after(0, self._set_status, "후처리 중 (영상+음성 합치기)...")
+            self.root.after(0, self._update_history_merging, vid, fname)
 
     def _on_done(self, ok: bool, err: str | None) -> None:
         self.is_downloading = False
         self.download_btn.configure(state="normal", text="다운로드 시작")
-        if ok:
-            self.progress.configure(value=100)
-            self._set_status("✓ 다운로드 완료")
-            self._append_log("--- 모두 완료 ---\n")
-            log.info("download done")
-            messagebox.showinfo(APP_TITLE, "다운로드가 완료되었습니다!")
-        else:
-            self._set_status("✗ 오류 발생")
-            self._append_log(f"[오류] {err}\n")
+        vid = self.current_dl_vid
+        widget = self.history_widgets.get(vid) if vid else None
+        if widget:
+            if ok:
+                widget.set_done()
+            else:
+                widget.set_error(err or "")
+        log.info("download done ok=%s", ok)
+        if not ok:
             messagebox.showerror(APP_TITLE, f"다운로드 실패:\n{err}")
+
+    # ---------------- 히스토리 항목 관리 ----------------
+
+    def _update_history_progress(self, vid: str, title: str, thumb_url: str,
+                                 pct: float, done: int, total: int, speed: float) -> None:
+        widget = self.history_widgets.get(vid)
+        if widget is None:
+            widget = self._add_history_item(vid, title, thumb_url)
+        elif title:
+            widget.set_title(title)
+        self.current_dl_vid = vid
+        widget.set_downloading(pct, done, total, speed)
+
+    def _update_history_merging(self, vid: str, fname: str) -> None:
+        widget = self.history_widgets.get(vid)
+        if widget:
+            widget.set_merging(fname)
+
+    def _add_history_item(self, vid: str, title: str, thumb_url: str) -> HistoryItemFrame:
+        if self.history_empty_lbl.winfo_ismapped():
+            self.history_empty_lbl.pack_forget()
+        widget = HistoryItemFrame(self.history_inner, vid, title)
+        self.history_widgets[vid] = widget
+        self.history_order.insert(0, vid)
+        self._relayout_history()
+        if thumb_url and PIL_AVAILABLE:
+            threading.Thread(
+                target=self._fetch_thumbnail, args=(vid, thumb_url), daemon=True,
+            ).start()
+        return widget
+
+    def _relayout_history(self) -> None:
+        """history_order 의 순서대로 항목 다시 배치 (최신이 위)."""
+        for child in self.history_inner.pack_slaves():
+            if child is not self.history_empty_lbl:
+                child.pack_forget()
+        for vid in self.history_order:
+            w = self.history_widgets.get(vid)
+            if w:
+                w.pack(side="top", fill="x", padx=4, pady=4)
+
+    def _fetch_thumbnail(self, vid: str, url: str) -> None:
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = resp.read(2_000_000)
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            img.thumbnail((HistoryItemFrame.THUMB_W, HistoryItemFrame.THUMB_H * 3))
+            photo = ImageTk.PhotoImage(img)
+        except Exception:
+            log.exception("thumbnail fetch failed for %s", vid)
+            return
+        self.root.after(0, self._apply_thumbnail, vid, photo)
+
+    def _apply_thumbnail(self, vid: str, photo: object) -> None:
+        widget = self.history_widgets.get(vid)
+        if widget:
+            widget.set_thumbnail(photo)
 
     # ---------------- 업데이트 ----------------
 
