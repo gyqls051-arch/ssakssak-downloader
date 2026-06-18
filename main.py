@@ -1055,6 +1055,11 @@ class DownloaderApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
+        # 원격 정지(킬스위치): 이전에 받은 정지 신호가 있으면 즉시 종료(오프라인 포함).
+        if self._enforce_sticky_kill():
+            self.aborted = True
+            self.root.destroy()
+            return
         # 첫 실행(또는 약관 변경) 시 면책 동의. 거부하면 실행을 중단한다.
         if not self._require_tos():
             self.aborted = True
@@ -1521,6 +1526,8 @@ class DownloaderApp:
             "usage_date": self._usage_date,
             "usage_count": self._usage_count,
             "tos_accepted": self._cfg.get("tos_accepted"),
+            "killed": self._cfg.get("killed", False),
+            "killed_message": self._cfg.get("killed_message", ""),
         }
 
     def _save_settings(self) -> None:
@@ -1601,6 +1608,26 @@ class DownloaderApp:
             self.root.wait_window(dlg)
         except tk.TclError:
             pass
+
+    def _enforce_sticky_kill(self) -> bool:
+        """이전에 받은 원격 정지(killswitch)가 있으면 강제 종료한다(오프라인 포함).
+        온라인이면 재확인해 정지가 해제됐으면 통과시키고, 확인 불가(오프라인)면
+        마지막 상태(정지)를 유지한다. 정지면 True 를 반환한다."""
+        if not self._cfg.get("killed"):
+            return False
+        decision = self.updater.fetch_decision()   # None = 오프라인/미설정
+        if decision is not None and decision.kind != "killswitch":
+            # 원격에서 정지 해제됨 → 끈끈한 정지 플래그 제거하고 정상 실행
+            self._cfg["killed"] = False
+            self._cfg["killed_message"] = ""
+            self._save_settings()
+            return False
+        if decision is not None and decision.kind == "killswitch":
+            self._cfg["killed_message"] = decision.message
+            self._save_settings()
+        msg = self._cfg.get("killed_message") or "현재 사용이 중단되었습니다."
+        messagebox.showerror(APP_TITLE, msg)
+        return True
 
     # ---------------- 일일 다운로드 한도 ----------------
 
@@ -1777,7 +1804,16 @@ class DownloaderApp:
 
     def _apply_update_decision(self, d: UpdateDecision) -> None:
         self.update_decision = d
+        # 정지가 아닌 결정을 받으면 끈끈한 정지 플래그를 해제한다(원격 해제 반영).
+        if d.kind != "killswitch" and self._cfg.get("killed"):
+            self._cfg["killed"] = False
+            self._cfg["killed_message"] = ""
+            self._save_settings()
         if d.kind == "killswitch":
+            # 끈끈하게: config 에 기록해 다음 실행부터는 오프라인이어도 정지 유지.
+            self._cfg["killed"] = True
+            self._cfg["killed_message"] = d.message
+            self._save_settings()
             messagebox.showerror(APP_TITLE, d.message)
             if d.download_url and messagebox.askyesno(APP_TITLE, "공지/다운로드 페이지를 열까요?"):
                 safe_open_url(d.download_url)
