@@ -33,12 +33,17 @@ if exist "ffmpeg.exe" (
 
 echo.
 echo [4/4] Building exe... (this takes 1-2 minutes)
+REM  --collect-all curl_cffi  : bundles its compiled libcurl DLLs + cacert
+REM     (PyInstaller cannot auto-detect these; onefile crashes without it)
+REM  --collect-submodules mutagen : yt-dlp imports mutagen dynamically
 %PY% -m PyInstaller ^
     --noconfirm ^
     --onefile ^
     --windowed ^
     --name "OffcutYoutubeDownloader" ^
     --collect-data sv_ttk ^
+    --collect-all curl_cffi ^
+    --collect-submodules mutagen ^
     %FFMPEG_BUNDLE% ^
     main.py || goto :error
 

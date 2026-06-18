@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""오프컷 유튜브 다운로더 - 4K/8K 지원 GUI
+"""오프컷 다운로더 - 유튜브·인스타·비메오·틱톡 등 1800+ 사이트 지원 GUI
 
 구조
 ----
@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -48,9 +49,11 @@ except ImportError:
 #  메타데이터 / 설정
 # ============================================================
 
-APP_TITLE = "오프컷 유튜브 다운로더"
-APP_VERSION = "1.0"
-APP_ID = "OffcutYoutubeDownloader"  # 로그 폴더 등에 사용
+APP_TITLE = "오프컷 다운로더"
+APP_VERSION = "1.1"
+# APP_ID 는 로그/ffmpeg 캐시 폴더 경로에 쓰인다. 바꾸면 기존 사용자의 캐시가
+# 고아가 되어 ffmpeg 를 다시 받게 되므로, 리브랜딩과 무관하게 유지한다.
+APP_ID = "OffcutYoutubeDownloader"
 
 # 깃 저장소를 만든 뒤 아래 URL의 <your-account>/<your-repo> 두 자리만 바꿔주세요.
 VERSION_INFO_URL = "https://raw.githubusercontent.com/rlagyqls051-create/offcut-youtube-downloader/main/version.json"
@@ -76,11 +79,33 @@ FORMAT_TABLE: list[tuple[str, str]] = [
     ("MKV (최고화질·무손실)", "mkv"),
 ]
 
-# 유튜브 URL 인식. youtube.com/watch, youtu.be, shorts, live, embed, music 까지 커버.
-YT_URL_RE = re.compile(
-    r"^(https?://)?(www\.|m\.|music\.)?"
-    r"(youtube\.com/(watch\?v=|shorts/|live/|embed/)|youtu\.be/)"
-    r"[\w\-]+",
+# 로그인 쿠키를 읽어올 브라우저 라벨 → yt-dlp 브라우저 이름(None=사용 안 함).
+# 인스타그램 비공개/로그인 영상, 멤버십 영상 등을 받을 때 사용한다.
+# Firefox 를 권장: Chrome/Edge 는 2024-07 이후 App-Bound Encryption 으로
+# 외부 쿠키 추출이 막히는 경우가 많다. (해당 브라우저는 닫은 상태여야 안정적)
+COOKIE_BROWSERS: list[tuple[str, str | None]] = [
+    ("사용 안 함",        None),
+    ("Firefox (권장)",   "firefox"),
+    ("Chrome",          "chrome"),
+    ("Edge",            "edge"),
+    ("Brave",           "brave"),
+    ("Opera",           "opera"),
+    ("Vivaldi",         "vivaldi"),
+    ("Whale",           "whale"),
+]
+
+# 일반 동영상 링크 인식 (http/https). yt-dlp 가 지원하는 1800+ 사이트를 모두
+# 시도할 수 있도록, 유튜브 전용이 아니라 모든 http(s) URL 을 받아들인다.
+URL_RE = re.compile(r"^https?://[^\s]+", re.IGNORECASE)
+
+# 자동 영상 분석 / 클립보드 자동 감지를 트리거할 대표 동영상 사이트.
+# (yt-dlp 는 이 목록과 무관하게 더 많은 사이트를 지원한다. 이 목록은 '자동'
+#  동작을 켤지 판단하는 용도일 뿐, 여기 없는 사이트도 수동 다운로드는 된다.)
+VIDEO_HOST_RE = re.compile(
+    r"(youtube\.com|youtu\.be|instagram\.com|vimeo\.com|tiktok\.com|"
+    r"twitter\.com|x\.com|facebook\.com|fb\.watch|fb\.com|twitch\.tv|"
+    r"dailymotion\.com|reddit\.com|bilibili\.com|tv\.naver\.com|"
+    r"tv\.kakao\.com|soundcloud\.com|streamable\.com)",
     re.IGNORECASE,
 )
 
@@ -163,6 +188,22 @@ def parse_version(v: str) -> tuple[int, ...]:
     return tuple(parts) or (0,)
 
 
+def compare_versions(a: str, b: str) -> int:
+    """버전 문자열 a, b 비교. a<b → -1, a==b → 0, a>b → 1.
+
+    두 튜플을 동일 길이로 0 패딩한 뒤 비교하므로
+    '1.0' 과 '1.0.0' 은 같은 버전으로 취급된다(오판 제거)."""
+    ta, tb = parse_version(a), parse_version(b)
+    n = max(len(ta), len(tb))
+    ta += (0,) * (n - len(ta))
+    tb += (0,) * (n - len(tb))
+    if ta < tb:
+        return -1
+    if ta > tb:
+        return 1
+    return 0
+
+
 def is_safe_http_url(url: str | None) -> bool:
     """webbrowser.open() 으로 열기 전에 스킴 검증.
     외부 JSON 에서 받은 URL이 javascript:/file: 등으로 변조되는 걸 차단."""
@@ -231,10 +272,12 @@ class AnalysisResult:
 class VideoAnalyzer:
     """yt-dlp로 메타데이터만 가져온다 (다운로드 X). UI 비의존."""
 
-    def probe(self, url: str) -> AnalysisResult:
-        with yt_dlp.YoutubeDL(
-            {"quiet": True, "no_warnings": True, "skip_download": True}
-        ) as ydl:
+    def probe(self, url: str, cookies_browser: str | None = None) -> AnalysisResult:
+        opts: dict = {"quiet": True, "no_warnings": True, "skip_download": True}
+        if cookies_browser:
+            # (browser, profile, keyring, container) 4-튜플이어야 한다.
+            opts["cookiesfrombrowser"] = (cookies_browser, None, None, None)
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if info.get("_type") == "playlist":
@@ -282,6 +325,10 @@ class DownloadConfig:
     is_audio_only: bool
     container: str
     ffmpeg_dir: str | None
+    cookies_browser: str | None = None   # yt-dlp 브라우저 이름 (None=사용 안 함)
+    embed_metadata: bool = True          # 메타데이터 + 썸네일(커버) 삽입
+    embed_subs: bool = False             # 자막 다운로드 후 삽입 (영상 전용)
+    sponsorblock: bool = False           # SponsorBlock 광고/홍보 구간 제거 (영상 전용)
 
 
 class Downloader:
@@ -289,9 +336,26 @@ class Downloader:
 
     def __init__(self,
                  on_progress: Callable[[dict], None],
-                 on_done: Callable[[bool, str | None], None]):
+                 on_done: Callable[[bool, str | None], None],
+                 on_item_done: Callable[[str, str | None], None] | None = None):
         self._on_progress = on_progress
         self._on_done = on_done
+        # 항목(영상) 1개의 후처리까지 끝났을 때 호출. 플레이리스트에서
+        # 각 항목을 개별 완료 처리하기 위한 콜백 (vid, 최종 경로 전달).
+        self._on_item_done = on_item_done
+
+    def _postprocessor_hook(self, d: dict) -> None:
+        """yt-dlp postprocessor hook. 후처리(Merger/추출 등)가 끝나면 해당
+        항목을 개별 완료 처리한다."""
+        if d.get("status") != "finished" or self._on_item_done is None:
+            return
+        info = d.get("info_dict") or {}
+        vid = str(info.get("id") or "")
+        if vid:
+            # 후처리 결과의 최종 경로. 진행률 훅이 잡은 임시 조각 파일명 대신
+            # 이걸 써야 '재생/폴더 열기'가 올바른 최종 파일을 가리킨다.
+            filepath = info.get("filepath") or None
+            self._on_item_done(vid, filepath)
 
     def run(self, cfg: DownloadConfig) -> None:
         opts: dict = {
@@ -299,20 +363,19 @@ class Downloader:
             "format": cfg.format_str,
             "noplaylist": False,
             "progress_hooks": [self._on_progress],
+            "postprocessor_hooks": [self._postprocessor_hook],
             "quiet": True,
             "no_warnings": True,
             "concurrent_fragment_downloads": 4,
+            "retries": 10,
+            "fragment_retries": 10,
         }
         if cfg.ffmpeg_dir:
             opts["ffmpeg_location"] = cfg.ffmpeg_dir
-        if cfg.is_audio_only:
-            opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
-        else:
-            opts["merge_output_format"] = cfg.container
+        if cfg.cookies_browser:
+            # (browser, profile, keyring, container) 4-튜플이어야 한다.
+            opts["cookiesfrombrowser"] = (cfg.cookies_browser, None, None, None)
+        self._configure_output(cfg, opts)
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -321,6 +384,41 @@ class Downloader:
         except Exception as e:
             log.exception("download failed")
             self._on_done(False, str(e))
+
+    @staticmethod
+    def _configure_output(cfg: DownloadConfig, opts: dict) -> None:
+        """출력 포맷 + 후처리 파이프라인을 opts 에 채운다.
+
+        후처리 추가 순서는 yt-dlp CLI(parse_options)가 생성하는 순서와 동일하게
+        맞춘다: [SponsorBlock] → [EmbedSubtitle] → [ModifyChapters] →
+        FFmpegMetadata → EmbedThumbnail. 순서가 어긋나면 챕터/자막/메타데이터가
+        서로를 덮어쓸 수 있어 그대로 따른다."""
+        pps: list[dict] = []
+        if cfg.is_audio_only:
+            pps.append({"key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3", "preferredquality": "192"})
+        else:
+            opts["merge_output_format"] = cfg.container
+            sb_cats = {"sponsor", "selfpromo", "interaction"}
+            if cfg.sponsorblock:
+                pps.append({"key": "SponsorBlock", "categories": sb_cats,
+                            "when": "after_filter"})
+            if cfg.embed_subs:
+                opts["writesubtitles"] = True
+                opts["subtitleslangs"] = ["ko", "en"]
+                pps.append({"key": "FFmpegEmbedSubtitle",
+                            "already_have_subtitle": False})
+            if cfg.sponsorblock:
+                pps.append({"key": "ModifyChapters",
+                            "remove_sponsor_segments": sb_cats})
+
+        if cfg.embed_metadata:
+            opts["writethumbnail"] = True
+            pps.append({"key": "FFmpegMetadata",
+                        "add_chapters": True, "add_metadata": True})
+            pps.append({"key": "EmbedThumbnail", "already_have_thumbnail": False})
+
+        opts["postprocessors"] = pps
 
 
 # ============================================================
@@ -375,7 +473,7 @@ class UpdateChecker:
     def _interpret(self, data: dict) -> UpdateDecision:
         url = data.get("download_url")
         safe_url = url if is_safe_http_url(url) else None
-        current = parse_version(self.current_version)
+        current = self.current_version
 
         if data.get("killswitch"):
             return UpdateDecision(
@@ -385,8 +483,8 @@ class UpdateChecker:
                 download_url=safe_url,
             )
 
-        min_ver = parse_version(str(data.get("min_supported_version", "0")))
-        if current < min_ver:
+        min_ver = str(data.get("min_supported_version", "0"))
+        if compare_versions(current, min_ver) < 0:
             return UpdateDecision(
                 kind="force_update",
                 message=f"현재 버전(v{self.current_version})은 더 이상 지원되지 않습니다.",
@@ -394,7 +492,7 @@ class UpdateChecker:
             )
 
         latest_str = str(data.get("latest_version", self.current_version))
-        if current < parse_version(latest_str):
+        if compare_versions(current, latest_str) < 0:
             return UpdateDecision(
                 kind="new_version",
                 latest_version=latest_str,
@@ -417,13 +515,39 @@ class FfmpegProgress:
 
 
 class FfmpegInstaller:
-    """BtbN/FFmpeg-Builds latest 빌드를 받아 LOCALAPPDATA 에 캐시."""
+    """BtbN/FFmpeg-Builds 빌드를 받아 LOCALAPPDATA 에 캐시.
+
+    무결성 보호 (정확한 공식 SHA256 핀이 공개돼 있지 않아 현실적 대안 사용):
+    (a) 릴리스 태그를 'latest'(롤링) 대신 고정 태그로 핀 → RELEASE_TAG
+    (b) 다운로드 후 zip 무결성/구조 검증 (열림 + bin/ffmpeg.exe 존재 + 비정상 크기 차단)
+    (c) EXPECTED_SHA256 에 알려진 해시를 넣으면 다운로드 바이트와 대조
+
+    ※ 사용자(배포자) 조치 필요:
+       1) RELEASE_TAG 를 실제 배포 시점의 고정 릴리스 태그로 바꿀 것
+          (예: "autobuild-2024-XX-XX-XX-XX"). 'latest' 는 내용이 수시로
+          바뀌어 해시 핀과 양립할 수 없다.
+       2) 그 zip 의 SHA256 을 계산해 EXPECTED_SHA256 에 넣으면 완전 무결성
+          검증이 활성화된다. 비워 두면 (a)(b)만 적용된다.
+          해시 계산 예: certutil -hashfile <zip> SHA256
+    """
+
+    # 'latest' 는 롤링 태그라 재현성/해시 핀이 불가능하다.
+    # 배포 시 아래를 고정 릴리스 태그로 교체하는 것을 권장한다.
+    RELEASE_TAG = "latest"
+    ASSET_NAME = "ffmpeg-master-latest-win64-gpl.zip"
 
     URL = (
-        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/"
-        "ffmpeg-master-latest-win64-gpl.zip"
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
+        f"{RELEASE_TAG}/{ASSET_NAME}"
     )
+
+    # 알려진 zip 의 SHA256(소문자 hex). 비우면 해시 검증 생략. (위 주석 참고)
+    EXPECTED_SHA256 = ""
+
     DOWNLOAD_TIMEOUT = 60  # 초
+    # 무결성: 받은 zip 크기 sanity 범위 (정상 win64-gpl zip 은 수십~수백 MB)
+    MIN_ZIP_BYTES = 5 * 1024 * 1024          # 5MB 미만이면 손상/오류 페이지로 간주
+    MAX_ZIP_BYTES = 500 * 1024 * 1024        # 500MB 초과면 비정상으로 간주
 
     def install(self, on_progress: Callable[[FfmpegProgress], None]) -> bool:
         target_dir = ffmpeg_cache_dir()
@@ -439,6 +563,16 @@ class FfmpegInstaller:
         except Exception as e:
             log.exception("ffmpeg download failed")
             on_progress(FfmpegProgress(stage="error", message=f"다운로드 실패: {e}"))
+            self._cleanup(tmp_zip)
+            return False
+
+        # 무결성 검증 (크기/zip 유효성/구조/해시). 실패 시 추출하지 않음.
+        on_progress(FfmpegProgress(stage="extracting", message="무결성 검증 중..."))
+        try:
+            self._verify_zip(tmp_zip)
+        except Exception as e:
+            log.error("ffmpeg integrity check failed: %s", e)
+            on_progress(FfmpegProgress(stage="error", message=f"무결성 검증 실패: {e}"))
             self._cleanup(tmp_zip)
             return False
 
@@ -474,6 +608,44 @@ class FfmpegInstaller:
                         stage="downloading", pct=pct,
                         message=f"{done/1024/1024:.1f} / {total/1024/1024:.1f} MB",
                     ))
+
+    @classmethod
+    def _verify_zip(cls, zip_path: Path) -> None:
+        """다운로드한 zip 의 무결성을 검증한다.
+        - 파일 크기 sanity 범위 확인 (오류 HTML/잘린 파일 차단)
+        - (해시 핀이 있으면) SHA256 대조
+        - zip 구조 유효성 + bin/ffmpeg.exe 멤버 존재 확인
+        실패하면 예외를 던진다."""
+        size = zip_path.stat().st_size
+        if not (cls.MIN_ZIP_BYTES <= size <= cls.MAX_ZIP_BYTES):
+            raise RuntimeError(
+                f"받은 파일 크기가 비정상입니다 ({size/1024/1024:.1f} MB)"
+            )
+
+        # (c) 알려진 해시가 있으면 바이트 대조
+        if cls.EXPECTED_SHA256:
+            digest = cls._sha256(zip_path)
+            if digest.lower() != cls.EXPECTED_SHA256.strip().lower():
+                raise RuntimeError("SHA256 해시가 일치하지 않습니다 (변조 의심)")
+
+        # (b) zip 유효성 + 예상 구조(bin/ffmpeg.exe) 확인
+        with zipfile.ZipFile(zip_path) as z:
+            if z.testzip() is not None:
+                raise RuntimeError("zip 내부에 손상된 항목이 있습니다")
+            has_ffmpeg = any(
+                n.replace("\\", "/").endswith("/bin/ffmpeg.exe")
+                for n in z.namelist()
+            )
+            if not has_ffmpeg:
+                raise RuntimeError("zip 구조가 예상과 다릅니다 (ffmpeg.exe 없음)")
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
 
     @staticmethod
     def _extract(zip_path: Path, target: Path) -> None:
@@ -729,6 +901,7 @@ class DownloaderApp:
         self.downloader = Downloader(
             on_progress=self._on_progress,
             on_done=lambda ok, err: self.root.after(0, self._on_done, ok, err),
+            on_item_done=lambda vid, fp: self.root.after(0, self._on_item_done, vid, fp),
         )
         self.updater = UpdateChecker()
         self.installer = FfmpegInstaller()
@@ -750,6 +923,9 @@ class DownloaderApp:
         self.history_widgets: dict[str, HistoryItemFrame] = {}
         self.history_order: list[str] = []   # vid 들, 새 항목이 앞에 insert(0, ...)
         self.current_dl_vid: str | None = None
+        # 이번 다운로드 세션에서 개별 완료 처리된 vid 집합.
+        # 플레이리스트/다중 항목에서 각 항목을 한 번씩만 완료 처리하기 위함.
+        self.completed_dl_vids: set[str] = set()
 
         self._build_ui()
         self._tick_clipboard()
@@ -791,7 +967,7 @@ class DownloaderApp:
         header = ttk.Frame(self.container)
         header.pack(side="top", fill="x", pady=(0, 18))
         ttk.Label(header, text=APP_TITLE, style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="유튜브 영상을 원하는 화질로 저장",
+        ttk.Label(header, text="유튜브·인스타·비메오·틱톡 등 영상을 원하는 화질로 저장",
                   style="Subtitle.TLabel").pack(side="left", padx=(12, 0), pady=(8, 0))
 
         self._build_url_card()
@@ -799,7 +975,7 @@ class DownloaderApp:
         self._build_progress_card()
 
     def _build_url_card(self) -> None:
-        card = ttk.LabelFrame(self.container, text="  유튜브 링크  ")
+        card = ttk.LabelFrame(self.container, text="  영상 링크  ")
         card.pack(side="top", fill="x", pady=(0, 14))
         self.url_card = card
 
@@ -829,6 +1005,24 @@ class DownloaderApp:
             text="클립보드 자동 감지 (URL 복사 시 자동 채움)",
             variable=self.clipboard_auto,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        # 로그인 쿠키 (인스타 비공개·멤버십 등): 분석 전부터 고를 수 있도록 여기 둔다.
+        cookie_row = ttk.Frame(inner)
+        cookie_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Label(cookie_row, text="로그인 쿠키").pack(side="left")
+        self.cookies_var = tk.StringVar(value=COOKIE_BROWSERS[0][0])
+        cookie_combo = ttk.Combobox(
+            cookie_row, textvariable=self.cookies_var,
+            values=[label for label, _ in COOKIE_BROWSERS],
+            state="readonly", width=16,
+        )
+        cookie_combo.pack(side="left", padx=(10, 12))
+        cookie_combo.bind("<<ComboboxSelected>>", self._on_cookie_changed)
+        ttk.Label(
+            cookie_row,
+            text="인스타·멤버십 등 로그인 영상에 필요 (해당 브라우저는 닫아두세요)",
+            style="Hint.TLabel", wraplength=380, justify="left",
+        ).pack(side="left")
 
     def _build_info_card(self) -> None:
         card = ttk.LabelFrame(self.container, text="  영상 정보  ")
@@ -868,7 +1062,7 @@ class DownloaderApp:
         ).grid(row=2, column=3, sticky="ew", padx=(12, 0), pady=6)
 
         ttk.Label(inner, text="저장 위치").grid(row=3, column=0, sticky="w", pady=(12, 6))
-        default_dir = str(Path.home() / "Downloads" / "유튜브")
+        default_dir = str(Path.home() / "Downloads" / "오프컷 다운로드")
         self.save_dir_var = tk.StringVar(value=default_dir)
 
         save_row = ttk.Frame(inner)
@@ -878,12 +1072,25 @@ class DownloaderApp:
         ttk.Button(save_row, text="찾기", command=self._pick_folder).grid(row=0, column=1, padx=(8, 0))
         ttk.Button(save_row, text="열기", command=self._open_folder).grid(row=0, column=2, padx=(6, 0))
 
+        # 부가 옵션 (모던 다운로더 기능)
+        self.embed_meta_var = tk.BooleanVar(value=True)
+        self.embed_subs_var = tk.BooleanVar(value=False)
+        self.sponsorblock_var = tk.BooleanVar(value=False)
+        opt_row = ttk.Frame(inner)
+        opt_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(16, 0))
+        ttk.Checkbutton(opt_row, text="메타데이터·썸네일 삽입",
+                        variable=self.embed_meta_var).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(opt_row, text="자막 포함 (ko/en)",
+                        variable=self.embed_subs_var).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(opt_row, text="SponsorBlock 구간 제거",
+                        variable=self.sponsorblock_var).pack(side="left")
+
         self.download_btn = ttk.Button(
             inner, text="다운로드 시작",
             style="Accent.TButton",
             command=self._start_download,
         )
-        self.download_btn.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(20, 0), ipady=6)
+        self.download_btn.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(20, 0), ipady=6)
 
     def _build_progress_card(self) -> None:
         """다운로드 목록 카드 — 4K Downloader 식 항목 스택, 최신이 위."""
@@ -984,6 +1191,15 @@ class DownloaderApp:
             self.root.after_cancel(self.analyze_after_id)
         self.analyze_after_id = self.root.after(600, self._maybe_analyze)
 
+    def _on_cookie_changed(self, _event: object | None = None) -> None:
+        """쿠키 브라우저가 바뀌면 같은 URL 도 다시 분석한다 (로그인 영상 대비)."""
+        self.last_analyzed_url = ""
+        self._on_url_changed()
+
+    def _selected_cookie_browser(self) -> str | None:
+        """현재 선택된 쿠키 브라우저의 yt-dlp 이름 (없으면 None)."""
+        return dict(COOKIE_BROWSERS).get(self.cookies_var.get())
+
     def _maybe_analyze(self) -> None:
         url = self.url_var.get().strip()
         if not url:
@@ -991,8 +1207,8 @@ class DownloaderApp:
             self._show_info(False)
             self.last_analyzed_url = ""
             return
-        if not YT_URL_RE.match(url):
-            self.url_status_var.set("⚠ 유튜브 URL 형식이 아닙니다.")
+        if not URL_RE.match(url):
+            self.url_status_var.set("⚠ 올바른 링크(http/https) 형식이 아닙니다.")
             self._show_info(False)
             return
         if url == self.last_analyzed_url or self.is_analyzing:
@@ -1000,11 +1216,14 @@ class DownloaderApp:
         self.last_analyzed_url = url
         self.is_analyzing = True
         self.url_status_var.set("⏳ 영상 정보 분석 중...")
-        threading.Thread(target=self._analyze_worker, args=(url,), daemon=True).start()
+        threading.Thread(
+            target=self._analyze_worker,
+            args=(url, self._selected_cookie_browser()), daemon=True,
+        ).start()
 
-    def _analyze_worker(self, url: str) -> None:
+    def _analyze_worker(self, url: str, cookies_browser: str | None) -> None:
         try:
-            result = self.analyzer.probe(url)
+            result = self.analyzer.probe(url, cookies_browser)
             self.root.after(0, self._apply_analysis, url, result)
         except Exception as e:
             log.exception("analysis failed")
@@ -1046,7 +1265,8 @@ class DownloaderApp:
         if self.clipboard_auto.get() and not self.is_downloading:
             try:
                 txt = self.root.clipboard_get().strip()
-                if txt and txt != self.last_clipboard and YT_URL_RE.match(txt):
+                if (txt and txt != self.last_clipboard
+                        and URL_RE.match(txt) and VIDEO_HOST_RE.search(txt)):
                     self.last_clipboard = txt
                     self.url_var.set(txt)
             except tk.TclError:
@@ -1060,12 +1280,12 @@ class DownloaderApp:
             return
         url = self.url_var.get().strip()
         if not url:
-            messagebox.showwarning(APP_TITLE, "유튜브 URL을 입력하세요.")
+            messagebox.showwarning(APP_TITLE, "영상 링크(URL)를 입력하세요.")
             return
-        if not YT_URL_RE.match(url):
+        if not URL_RE.match(url):
             if not messagebox.askyesno(
                 APP_TITLE,
-                "유튜브 URL 형식이 아닌 것 같습니다. 그래도 시도할까요?",
+                "올바른 링크(http/https) 형식이 아닌 것 같습니다. 그래도 시도할까요?",
             ):
                 return
 
@@ -1092,6 +1312,7 @@ class DownloaderApp:
 
         self.is_downloading = True
         self.current_dl_vid = None
+        self.completed_dl_vids = set()
         self.download_btn.configure(state="disabled", text="다운로드 중...")
         self._show_progress(True)
         log.info("download start url=%s format=%s", url, format_str)
@@ -1100,6 +1321,10 @@ class DownloaderApp:
             url=url, out_dir=str(save_dir),
             format_str=format_str, is_audio_only=is_audio_only,
             container=container, ffmpeg_dir=self.ffmpeg_dir,
+            cookies_browser=self._selected_cookie_browser(),
+            embed_metadata=self.embed_meta_var.get(),
+            embed_subs=self.embed_subs_var.get(),
+            sponsorblock=self.sponsorblock_var.get(),
         )
         threading.Thread(target=self.downloader.run, args=(cfg,), daemon=True).start()
 
@@ -1126,17 +1351,43 @@ class DownloaderApp:
             fname = d.get("filename", "")
             self.root.after(0, self._update_history_merging, vid, fname)
 
+    def _on_item_done(self, vid: str, filepath: str | None = None) -> None:
+        """항목(영상) 1개의 후처리가 끝났을 때 호출 (vid별 개별 완료 처리).
+        플레이리스트에서 각 항목이 끝나는 즉시 완료 표시되도록 한다."""
+        if not vid or vid in self.completed_dl_vids:
+            return
+        widget = self.history_widgets.get(vid)
+        if widget:
+            if filepath:
+                # 병합/추출 후의 최종 경로로 갱신 (임시 조각 파일명 교체).
+                widget.file_path = filepath
+            widget.set_done()
+            self.completed_dl_vids.add(vid)
+
     def _on_done(self, ok: bool, err: str | None) -> None:
+        """다운로드(전체 작업) 종료 콜백.
+
+        성공 항목은 대부분 postprocessor hook(_on_item_done)에서 이미
+        개별 완료 처리됐다. 여기서는 후처리 hook이 발생하지 않은 경우
+        (예: 재인코딩/병합이 필요 없는 단일 스트림)를 대비해, 아직
+        완료 처리되지 않은 항목들을 마저 완료 처리하는 안전망 역할을 한다.
+        실패 시에는 마지막 진행 항목에 오류를 표시한다."""
         self.is_downloading = False
         self.download_btn.configure(state="normal", text="다운로드 시작")
-        vid = self.current_dl_vid
-        widget = self.history_widgets.get(vid) if vid else None
-        if widget:
-            if ok:
-                widget.set_done()
-            else:
+
+        if ok:
+            # hook으로 누락된 항목까지 일괄 완료 처리 (단일/다중 모두 안전).
+            for vid, widget in self.history_widgets.items():
+                if vid not in self.completed_dl_vids:
+                    widget.set_done()
+                    self.completed_dl_vids.add(vid)
+        else:
+            vid = self.current_dl_vid
+            widget = self.history_widgets.get(vid) if vid else None
+            if widget:
                 widget.set_error(err or "")
-        log.info("download done ok=%s", ok)
+
+        log.info("download done ok=%s items=%d", ok, len(self.completed_dl_vids))
         if not ok:
             messagebox.showerror(APP_TITLE, f"다운로드 실패:\n{err}")
 
