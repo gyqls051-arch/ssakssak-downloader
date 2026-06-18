@@ -1468,6 +1468,8 @@ class DownloaderApp:
         )
 
     def _fetch_info_thumbnail(self, url: str, thumb_url: str) -> None:
+        # 네트워크 + 디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임한다
+        # (Tkinter 객체는 메인 스레드에서만 생성 가능 — 안 그러면 frozen 에서 실패).
         try:
             req = urllib.request.Request(
                 thumb_url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
@@ -1475,17 +1477,21 @@ class DownloaderApp:
                 data = resp.read(3_000_000)
             img = Image.open(io.BytesIO(data)).convert("RGB")
             img.thumbnail((160, 90))
-            photo = ImageTk.PhotoImage(img)
-        except Exception:
-            log.info("info thumbnail fetch failed")
+        except Exception as e:
+            log.info("info thumbnail fetch failed: %s", e)
             return
-        self.root.after(0, self._apply_info_thumbnail, url, photo)
+        self.root.after(0, self._apply_info_thumbnail, url, img)
 
-    def _apply_info_thumbnail(self, url: str, photo: object) -> None:
+    def _apply_info_thumbnail(self, url: str, img: object) -> None:
         # URL 이 바뀐 뒤 늦게 도착한 썸네일은 버린다.
         if url != self.last_analyzed_url:
             return
-        self._info_photo = photo   # 참조 유지
+        try:
+            photo = ImageTk.PhotoImage(img)   # 메인 스레드에서 생성
+        except Exception as e:
+            log.info("info thumbnail render failed: %s", e)
+            return
+        self._info_photo = photo   # 참조 유지 (GC 방지)
         self.info_thumb.delete("all")
         self.info_thumb.create_image(80, 45, image=photo)
 
@@ -1847,6 +1853,7 @@ class DownloaderApp:
                 w.pack(side="top", fill="x", padx=4, pady=4)
 
     def _fetch_thumbnail(self, vid: str, url: str) -> None:
+        # 네트워크 + 디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임.
         try:
             req = urllib.request.Request(
                 url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
@@ -1854,16 +1861,21 @@ class DownloaderApp:
                 data = resp.read(2_000_000)
             img = Image.open(io.BytesIO(data)).convert("RGB")
             img.thumbnail((HistoryItemFrame.THUMB_W, HistoryItemFrame.THUMB_H * 3))
-            photo = ImageTk.PhotoImage(img)
-        except Exception:
-            log.exception("thumbnail fetch failed for %s", vid)
+        except Exception as e:
+            log.info("thumbnail fetch failed for %s: %s", vid, e)
             return
-        self.root.after(0, self._apply_thumbnail, vid, photo)
+        self.root.after(0, self._apply_thumbnail, vid, img)
 
-    def _apply_thumbnail(self, vid: str, photo: object) -> None:
+    def _apply_thumbnail(self, vid: str, img: object) -> None:
         widget = self.history_widgets.get(vid)
-        if widget:
-            widget.set_thumbnail(photo)
+        if not widget:
+            return
+        try:
+            photo = ImageTk.PhotoImage(img)   # 메인 스레드에서 생성
+        except Exception as e:
+            log.info("thumbnail render failed for %s: %s", vid, e)
+            return
+        widget.set_thumbnail(photo)
 
     # ---------------- 업데이트 ----------------
 
