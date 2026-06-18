@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""오프컷 다운로더 - 유튜브·인스타·비메오·틱톡 등 1800+ 사이트 지원 GUI
+"""싹싹김치 다운로드 - 유튜브·인스타·비메오·틱톡 등 1800+ 사이트 지원 GUI
 
 구조
 ----
@@ -50,19 +50,45 @@ except ImportError:
 #  메타데이터 / 설정
 # ============================================================
 
-APP_TITLE = "오프컷 다운로더"
-APP_VERSION = "1.1"
-# APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로에 쓰인다. 바꾸면 기존
-# 사용자의 데이터가 고아가 되므로, 리브랜딩과 무관하게 유지한다.
-APP_ID = "OffcutYoutubeDownloader"
+APP_TITLE = "싹싹김치 다운로드"
+APP_VERSION = "1.2"
+# APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
+# 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
+APP_ID = "SsakSsakKimchiDownloader"
 
 # 무료 일일 다운로드 한도 (완료된 영상 개수 기준, 자정에 리셋).
 # config.json 의 카운트라 삭제로 우회 가능 — 엄격한 DRM 이 아니라 과도한
-# 사용 억제/과금 유도용. 서버 검증이 필요하면 나중에 라이선스 키로 확장.
+# 사용 억제용. 무제한 전환은 _is_unlimited() 한 곳만 교체.
 DAILY_DOWNLOAD_LIMIT = 20
 
-# 깃 저장소를 만든 뒤 아래 URL의 <your-account>/<your-repo> 두 자리만 바꿔주세요.
-VERSION_INFO_URL = "https://raw.githubusercontent.com/rlagyqls051-create/offcut-youtube-downloader/main/version.json"
+# 첫 실행 시 받을 이용약관/면책 동의 버전. 약관을 바꾸면 올려 재동의 받는다.
+TOS_VERSION = "1"
+
+# 제휴 광고 배너 — 외부 광고주처럼 노출된다 (앱 소유와 무관한 일반 광고 슬롯).
+# ※ 아래 도메인을 실제 홍보 대상 홈페이지 주소로 교체하세요.
+#    UTM 파라미터로 소유관계 노출 없이 유입량만 측정할 수 있다.
+PROMO_URL = "https://offcut.kr/?utm_source=ssakssak_downloader&utm_medium=app_banner"
+PROMO_TEXT = "광고 ｜ OFFCUT STUDIO — 영상 제작 올인원 워크스페이스 · 자세히 보기 →"
+
+# 첫 실행 면책 고지 본문.
+TOS_BODY = (
+    "본 프로그램은 사용자가 접근 권한을 가진 영상을 개인적으로 저장하기 위한 "
+    "도구입니다. 사용 전 아래 내용에 동의해 주세요.\n\n"
+    "1. 저작권 준수 책임은 전적으로 사용자에게 있습니다. 저작권자의 허락 없이 "
+    "보호되는 콘텐츠를 다운로드·복제·배포하는 행위는 법에 저촉될 수 있으며, "
+    "그에 따른 모든 법적 책임은 사용자 본인이 부담합니다.\n\n"
+    "2. 사용자는 YouTube 등 각 사이트의 이용약관을 준수해야 합니다.\n\n"
+    "3. 본 프로그램은 DRM(기술적 보호조치)이 적용된 콘텐츠는 다운로드하지 "
+    "않습니다.\n\n"
+    "4. 본 프로그램은 '있는 그대로(AS-IS)' 제공되며, 사용으로 인해 발생하는 "
+    "어떠한 직간접적 손해에 대해서도 제작자는 책임지지 않습니다.\n\n"
+    "동의하시면 '동의함'을, 동의하지 않으시면 '종료'를 눌러주세요."
+)
+
+# 업데이트 채널. 브랜드 격리를 위해 OFFCUT 과 무관한 별도(가능하면 별도 계정/조직)
+# 공개 저장소에 version.json 을 올리고 아래 <your-account> 자리를 채우세요.
+# <your-account> 가 남아 있으면 업데이트 체크를 건너뜁니다(=배포 전 안전 기본값).
+VERSION_INFO_URL = "https://raw.githubusercontent.com/<your-account>/ssakssak-downloader/main/version.json"
 VERSION_CHECK_TIMEOUT = 3.0   # 초
 VERSION_JSON_MAX_BYTES = 10_000  # 응답 크기 제한 (메모리 보호)
 
@@ -163,7 +189,7 @@ def setup_logging() -> Path:
     return log_file
 
 
-log = logging.getLogger("offcut-yt")
+log = logging.getLogger("ssakssak")
 
 
 # ============================================================
@@ -327,7 +353,7 @@ class VideoAnalyzer:
 # ============================================================
 
 # 사용자가 취소했을 때 on_done(err) 로 전달되는 내부 신호값 (실제 에러 아님).
-DOWNLOAD_CANCELLED = "__offcut_cancelled__"
+DOWNLOAD_CANCELLED = "__download_cancelled__"
 
 
 @dataclass
@@ -1029,6 +1055,12 @@ class DownloaderApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
+        # 첫 실행(또는 약관 변경) 시 면책 동의. 거부하면 실행을 중단한다.
+        if not self._require_tos():
+            self.aborted = True
+            self.root.destroy()
+            return
+        self.aborted = False
         self._tick_clipboard()
         self._check_update_async()
         # 앱 렌더링이 끝난 뒤 ffmpeg 설치 안내 (없을 때만)
@@ -1066,6 +1098,15 @@ class DownloaderApp:
                                       foreground=COLOR_ACCENT,
                                       cursor="hand2", anchor="w", justify="left")
         self.update_label.pack(side="bottom", fill="x", pady=(0, 6))
+
+        # 제휴 광고 배너 (외부 광고주처럼 표시) — 클릭 시 PROMO_URL 로 이동
+        self.promo_lbl = tk.Label(
+            self.container, text=PROMO_TEXT, fg=COLOR_ACCENT, bg="#eef4ff",
+            cursor="hand2", anchor="center", padx=10, pady=8,
+            font=(preferred_font_family(), 9),
+        )
+        self.promo_lbl.pack(side="bottom", fill="x", pady=(6, 0))
+        self.promo_lbl.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
 
         # 헤더
         header = ttk.Frame(self.container)
@@ -1169,7 +1210,7 @@ class DownloaderApp:
         ).grid(row=2, column=3, sticky="ew", padx=(12, 0), pady=6)
 
         ttk.Label(inner, text="저장 위치").grid(row=3, column=0, sticky="w", pady=(12, 6))
-        default_dir = str(Path.home() / "Downloads" / "오프컷 다운로드")
+        default_dir = str(Path.home() / "Downloads" / "싹싹김치 다운로드")
         self.save_dir_var = tk.StringVar(value=self._cfg.get("save_dir", default_dir))
 
         save_row = ttk.Frame(inner)
@@ -1410,8 +1451,7 @@ class DownloaderApp:
             messagebox.showinfo(
                 APP_TITLE,
                 f"오늘 무료 다운로드 한도({DAILY_DOWNLOAD_LIMIT}개)를 모두 사용했습니다.\n"
-                "오프컷 유료 플랜으로 로그인하면 무제한으로 받을 수 있어요.\n"
-                "(무료 한도는 내일 다시 초기화됩니다.)",
+                "무료 한도는 내일 자정에 다시 초기화됩니다.",
             )
             return
 
@@ -1480,21 +1520,93 @@ class DownloaderApp:
             "clipboard_auto": self.clipboard_auto.get(),
             "usage_date": self._usage_date,
             "usage_count": self._usage_count,
+            "tos_accepted": self._cfg.get("tos_accepted"),
         }
 
     def _save_settings(self) -> None:
         self.settings.save(self._collect_settings())
 
     def _on_close(self) -> None:
-        """창 닫기: 설정을 저장하고 종료."""
+        """창 닫기: 설정 저장 → 광고 1회 노출 → 종료."""
         self._save_settings()
+        self._show_exit_promo()
         self.root.destroy()
+
+    # ---------------- 약관 동의 / 광고 ----------------
+
+    def _require_tos(self) -> bool:
+        """첫 실행(또는 약관 변경) 시 면책 동의를 받는다. 동의=True, 거부=False.
+        이미 현재 버전 약관에 동의했으면 묻지 않고 바로 통과."""
+        if self._cfg.get("tos_accepted") == TOS_VERSION:
+            return True
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"{APP_TITLE} · 이용약관 및 면책")
+        dlg.geometry("560x470")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        result = {"ok": False}
+
+        fam = preferred_font_family()
+        ttk.Label(dlg, text="이용약관 및 면책 고지",
+                  font=(fam, 14, "bold")).pack(pady=(18, 8))
+        txt = tk.Text(dlg, wrap="word", relief="flat", bg=COLOR_LOG_BG,
+                      padx=14, pady=10, font=(fam, 10))
+        txt.insert("1.0", TOS_BODY)
+        txt.configure(state="disabled")
+        txt.pack(fill="both", expand=True, padx=18, pady=(0, 4))
+
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=18, pady=14)
+
+        def accept() -> None:
+            result["ok"] = True
+            self._cfg["tos_accepted"] = TOS_VERSION
+            dlg.destroy()
+
+        def decline() -> None:
+            result["ok"] = False
+            dlg.destroy()
+
+        ttk.Button(btns, text="동의함", style="Accent.TButton",
+                   command=accept).pack(side="right")
+        ttk.Button(btns, text="종료", command=decline).pack(side="right", padx=(0, 8))
+        dlg.protocol("WM_DELETE_WINDOW", decline)
+
+        self.root.wait_window(dlg)
+        if result["ok"]:
+            self._save_settings()   # 동의 기록 영속화
+        return result["ok"]
+
+    def _show_exit_promo(self) -> None:
+        """종료 시 광고 1회 노출 (외부 광고주 배너처럼). 실패해도 종료를 막지 않음."""
+        try:
+            dlg = tk.Toplevel(self.root)
+            dlg.title("이용해 주셔서 감사합니다")
+            dlg.geometry("420x210")
+            dlg.transient(self.root)
+            dlg.grab_set()
+            dlg.resizable(False, False)
+            fam = preferred_font_family()
+            ttk.Label(dlg, text="이용해 주셔서 감사합니다!",
+                      font=(fam, 13, "bold")).pack(pady=(22, 6))
+            promo = tk.Label(dlg, text=PROMO_TEXT, fg=COLOR_ACCENT, bg="#eef4ff",
+                             cursor="hand2", padx=10, pady=12, wraplength=360,
+                             justify="center", font=(fam, 10))
+            promo.pack(fill="x", padx=20, pady=8)
+            promo.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
+            ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(pady=(4, 0))
+            dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+            self.root.wait_window(dlg)
+        except tk.TclError:
+            pass
 
     # ---------------- 일일 다운로드 한도 ----------------
 
     def _is_unlimited(self) -> bool:
-        """오프컷 유료 플랜 로그인 시 무제한. 현재는 미연동이라 항상 False.
-        추후 OFFCUT 계정/Supabase 구독 확인 결과로 교체할 단일 지점."""
+        """유료 라이선스 활성 시 무제한. 현재는 미연동이라 항상 False.
+        추후 라이선스/구독 확인 결과로 교체할 단일 지점."""
         return False
 
     def _roll_usage_date(self) -> None:
@@ -1509,7 +1621,7 @@ class DownloaderApp:
 
     def _update_usage_label(self) -> None:
         if self._is_unlimited():
-            self.usage_lbl.configure(text="무제한 (오프컷 플랜)")
+            self.usage_lbl.configure(text="무제한 (유료 플랜)")
             return
         self.usage_lbl.configure(
             text=f"오늘 남은 다운로드 {self._remaining_today()} / {DAILY_DOWNLOAD_LIMIT}")
@@ -1732,8 +1844,9 @@ def main() -> None:
     log.info("starting %s v%s, log=%s", APP_TITLE, APP_VERSION, log_file)
     root = tk.Tk()
     try:
-        DownloaderApp(root)
-        root.mainloop()
+        app = DownloaderApp(root)
+        if not getattr(app, "aborted", False):
+            root.mainloop()
     except Exception:
         log.exception("fatal error in main loop")
         raise

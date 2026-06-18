@@ -1,6 +1,6 @@
 @echo off
 REM ============================================================
-REM  Offcut YouTube Downloader - exe build script
+REM  SsakSsak Kimchi Downloader - exe build script
 REM  Creates a single executable for distribution.
 REM  (English-only to avoid Windows codepage issues with .bat files)
 REM ============================================================
@@ -40,7 +40,7 @@ REM  --collect-submodules mutagen : yt-dlp imports mutagen dynamically
     --noconfirm ^
     --onefile ^
     --windowed ^
-    --name "OffcutYoutubeDownloader" ^
+    --name "SsakSsakKimchiDownloader" ^
     --collect-data sv_ttk ^
     --collect-all curl_cffi ^
     --collect-submodules mutagen ^
@@ -50,7 +50,7 @@ REM  --collect-submodules mutagen : yt-dlp imports mutagen dynamically
 echo.
 echo ============================================================
 echo  Build complete!
-echo  Output: dist\OffcutYoutubeDownloader.exe
+echo  Output: dist\SsakSsakKimchiDownloader.exe
 echo ============================================================
 echo.
 pause
