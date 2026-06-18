@@ -303,6 +303,7 @@ class AnalysisResult:
     title: str
     meta: str                 # 한 줄 요약 (플레이리스트 여부도 이 문구에 반영)
     heights: list[int] = field(default_factory=list)
+    thumbnail: str = ""       # 미리보기 썸네일 URL (없으면 빈 문자열)
 
 
 class VideoAnalyzer:
@@ -324,6 +325,7 @@ class VideoAnalyzer:
             return AnalysisResult(
                 title=title, meta=meta,
                 heights=self._heights(first or {}),
+                thumbnail=self._thumb(first or {}) or self._thumb(info),
             )
 
         title = info.get("title", "(제목 없음)")
@@ -339,13 +341,26 @@ class VideoAnalyzer:
             parts.append(f"🎬 {channel}")
         parts.append(f"⏱ {m}:{s:02d}")
         parts.append(max_str)
-        return AnalysisResult(title=title, meta="  ·  ".join(parts), heights=heights)
+        return AnalysisResult(title=title, meta="  ·  ".join(parts),
+                              heights=heights, thumbnail=self._thumb(info))
 
     @staticmethod
     def _heights(info: dict) -> list[int]:
         formats = info.get("formats") or []
         hs = {f.get("height") for f in formats if isinstance(f.get("height"), int)}
         return sorted(hs)
+
+    @staticmethod
+    def _thumb(info: dict) -> str:
+        """가장 적당한 썸네일 URL 하나를 고른다 (없으면 빈 문자열)."""
+        t = info.get("thumbnail")
+        if t:
+            return str(t)
+        for th in reversed(info.get("thumbnails") or []):
+            u = th.get("url")
+            if u:
+                return str(u)
+        return ""
 
 
 # ============================================================
@@ -1008,8 +1023,8 @@ class DownloaderApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f"{APP_TITLE} v{APP_VERSION}")
-        self.root.geometry("740x780")
-        self.root.minsize(660, 700)
+        self.root.geometry("760x880")
+        self.root.minsize(680, 820)
 
         apply_theme(root)
 
@@ -1179,19 +1194,32 @@ class DownloaderApp:
         card = ttk.LabelFrame(self.container, text="  영상 정보  ")
         self.info_card = card
 
+        # 미리보기: 썸네일(좌) + 제목/메타(우) — 4K Downloader 식 사전 노출
+        preview = ttk.Frame(card)
+        preview.pack(fill="x", padx=PAD_CARD, pady=(16, 0))
+        preview.columnconfigure(1, weight=1)
+
+        self.info_thumb = tk.Canvas(preview, width=160, height=90,
+                                    bg="#dcdcdc", highlightthickness=0)
+        self.info_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 14), sticky="n")
+        self._info_photo = None   # PhotoImage 참조 유지 (GC 방지)
+
+        self.info_title_lbl = ttk.Label(
+            preview, text="", style="CardTitle.TLabel",
+            wraplength=440, justify="left", anchor="w",
+        )
+        self.info_title_lbl.grid(row=0, column=1, sticky="ew", pady=(2, 4))
+
+        self.info_meta_lbl = ttk.Label(
+            preview, text="", style="CardMuted.TLabel",
+            wraplength=440, justify="left", anchor="w",
+        )
+        self.info_meta_lbl.grid(row=1, column=1, sticky="nw")
+
         inner = ttk.Frame(card)
         inner.pack(fill="x", padx=PAD_CARD, pady=16)
         inner.columnconfigure(1, weight=1)
         inner.columnconfigure(3, weight=1)
-
-        self.info_title_lbl = ttk.Label(
-            inner, text="", style="CardTitle.TLabel",
-            wraplength=640, justify="left", anchor="w",
-        )
-        self.info_title_lbl.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 4))
-
-        self.info_meta_lbl = ttk.Label(inner, text="", style="CardMuted.TLabel")
-        self.info_meta_lbl.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 16))
 
         # 옵션
         ttk.Label(inner, text="화질").grid(row=2, column=0, sticky="w", pady=6)
@@ -1264,8 +1292,9 @@ class DownloaderApp:
         inner.rowconfigure(0, weight=1)
 
         # 스크롤 가능 영역: Canvas + 내부 Frame (tkinter 표준 패턴)
+        # height 로 최소 높이를 확보해 다른 카드가 커져도 목록이 찌부되지 않게 한다.
         self.history_canvas = tk.Canvas(
-            inner, highlightthickness=0, bg=COLOR_LOG_BG,
+            inner, highlightthickness=0, bg=COLOR_LOG_BG, height=200,
         )
         self.history_canvas.grid(row=0, column=0, sticky="nsew")
 
@@ -1400,6 +1429,12 @@ class DownloaderApp:
         self.info_title_lbl.configure(text=result.title)
         self.info_meta_lbl.configure(text=result.meta)
 
+        # 썸네일 미리보기: 일단 플레이스홀더 → 있으면 백그라운드로 받아 교체
+        self._set_info_thumb_placeholder()
+        if result.thumbnail and PIL_AVAILABLE:
+            threading.Thread(target=self._fetch_info_thumbnail,
+                             args=(url, result.thumbnail), daemon=True).start()
+
         if result.heights:
             max_h = max(result.heights)
             labels = [label for label, h in QUALITY_TABLE
@@ -1421,6 +1456,38 @@ class DownloaderApp:
         short = err.splitlines()[-1][:120] if err else "알 수 없는 오류"
         self.url_status_var.set(f"⚠ 영상 정보를 가져오지 못했습니다: {short}")
         self._show_info(False)
+
+    # ---------------- 썸네일 미리보기 ----------------
+
+    def _set_info_thumb_placeholder(self) -> None:
+        self._info_photo = None
+        self.info_thumb.delete("all")
+        self.info_thumb.create_text(
+            80, 45, text="미리보기", fill="#888888",
+            font=(preferred_font_family(), 9),
+        )
+
+    def _fetch_info_thumbnail(self, url: str, thumb_url: str) -> None:
+        try:
+            req = urllib.request.Request(
+                thumb_url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = resp.read(3_000_000)
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            img.thumbnail((160, 90))
+            photo = ImageTk.PhotoImage(img)
+        except Exception:
+            log.info("info thumbnail fetch failed")
+            return
+        self.root.after(0, self._apply_info_thumbnail, url, photo)
+
+    def _apply_info_thumbnail(self, url: str, photo: object) -> None:
+        # URL 이 바뀐 뒤 늦게 도착한 썸네일은 버린다.
+        if url != self.last_analyzed_url:
+            return
+        self._info_photo = photo   # 참조 유지
+        self.info_thumb.delete("all")
+        self.info_thumb.create_image(80, 45, image=photo)
 
     def _tick_clipboard(self) -> None:
         if self.clipboard_auto.get() and not self.is_downloading:
