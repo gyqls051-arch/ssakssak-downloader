@@ -1,8 +1,8 @@
 {
-  "latest_version": "1.0",
+  "latest_version": "1.1",
   "min_supported_version": "1.0",
   "killswitch": false,
-  "killswitch_message": "유튜브 정책 변경 대응 중입니다. 잠시 후 새 버전을 배포하겠습니다.",
+  "killswitch_message": "사이트 정책 변경 대응 중입니다. 잠시 후 새 버전을 배포하겠습니다.",
   "download_url": "https://github.com/rlagyqls051-create/offcut-youtube-downloader/releases/latest",
-  "release_notes": ""
+  "release_notes": "멀티사이트 지원·로그인 쿠키·설정 저장·다운로드 취소·일일 한도"
 }

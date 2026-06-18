@@ -31,6 +31,7 @@ import urllib.request
 import webbrowser
 import zipfile
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 from typing import Callable
@@ -51,9 +52,14 @@ except ImportError:
 
 APP_TITLE = "오프컷 다운로더"
 APP_VERSION = "1.1"
-# APP_ID 는 로그/ffmpeg 캐시 폴더 경로에 쓰인다. 바꾸면 기존 사용자의 캐시가
-# 고아가 되어 ffmpeg 를 다시 받게 되므로, 리브랜딩과 무관하게 유지한다.
+# APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로에 쓰인다. 바꾸면 기존
+# 사용자의 데이터가 고아가 되므로, 리브랜딩과 무관하게 유지한다.
 APP_ID = "OffcutYoutubeDownloader"
+
+# 무료 일일 다운로드 한도 (완료된 영상 개수 기준, 자정에 리셋).
+# config.json 의 카운트라 삭제로 우회 가능 — 엄격한 DRM 이 아니라 과도한
+# 사용 억제/과금 유도용. 서버 검증이 필요하면 나중에 라이선스 키로 확장.
+DAILY_DOWNLOAD_LIMIT = 20
 
 # 깃 저장소를 만든 뒤 아래 URL의 <your-account>/<your-repo> 두 자리만 바꿔주세요.
 VERSION_INFO_URL = "https://raw.githubusercontent.com/rlagyqls051-create/offcut-youtube-downloader/main/version.json"
@@ -993,6 +999,12 @@ class DownloaderApp:
         self.settings = Settings()
         self._cfg = self.settings.load()   # 저장된 설정 (없으면 {})
 
+        # 일일 다운로드 사용량 (날짜가 바뀌었으면 0 으로 리셋)
+        self._usage_date = date.today().isoformat()
+        self._usage_count = (int(self._cfg.get("usage_count", 0))
+                             if self._cfg.get("usage_date") == self._usage_date
+                             else 0)
+
         # 상태
         self.ffmpeg_dir = find_ffmpeg()
         self.is_downloading = False
@@ -1046,6 +1058,9 @@ class DownloaderApp:
             )
         self.ffmpeg_lbl.pack(side="left")
         ttk.Label(self.footer, text=f"v{APP_VERSION}", style="Subtitle.TLabel").pack(side="right")
+        self.usage_lbl = ttk.Label(self.footer, text="", style="Subtitle.TLabel")
+        self.usage_lbl.pack(side="right", padx=(0, 16))
+        self._update_usage_label()
 
         self.update_label = ttk.Label(self.container, text="",
                                       foreground=COLOR_ACCENT,
@@ -1389,6 +1404,17 @@ class DownloaderApp:
             ):
                 return
 
+        # 일일 한도 확인 (날짜가 바뀌었으면 먼저 리셋). 유료 플랜은 무제한.
+        self._roll_usage_date()
+        if not self._is_unlimited() and self._usage_count >= DAILY_DOWNLOAD_LIMIT:
+            messagebox.showinfo(
+                APP_TITLE,
+                f"오늘 무료 다운로드 한도({DAILY_DOWNLOAD_LIMIT}개)를 모두 사용했습니다.\n"
+                "오프컷 유료 플랜으로 로그인하면 무제한으로 받을 수 있어요.\n"
+                "(무료 한도는 내일 다시 초기화됩니다.)",
+            )
+            return
+
         save_dir = Path(self.save_dir_var.get())
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
@@ -1452,6 +1478,8 @@ class DownloaderApp:
             "embed_subs": self.embed_subs_var.get(),
             "sponsorblock": self.sponsorblock_var.get(),
             "clipboard_auto": self.clipboard_auto.get(),
+            "usage_date": self._usage_date,
+            "usage_count": self._usage_count,
         }
 
     def _save_settings(self) -> None:
@@ -1461,6 +1489,41 @@ class DownloaderApp:
         """창 닫기: 설정을 저장하고 종료."""
         self._save_settings()
         self.root.destroy()
+
+    # ---------------- 일일 다운로드 한도 ----------------
+
+    def _is_unlimited(self) -> bool:
+        """오프컷 유료 플랜 로그인 시 무제한. 현재는 미연동이라 항상 False.
+        추후 OFFCUT 계정/Supabase 구독 확인 결과로 교체할 단일 지점."""
+        return False
+
+    def _roll_usage_date(self) -> None:
+        """앱이 자정을 넘겨 켜져 있어도 날짜가 바뀌면 카운트를 리셋한다."""
+        today = date.today().isoformat()
+        if today != self._usage_date:
+            self._usage_date, self._usage_count = today, 0
+            self._update_usage_label()
+
+    def _remaining_today(self) -> int:
+        return max(0, DAILY_DOWNLOAD_LIMIT - self._usage_count)
+
+    def _update_usage_label(self) -> None:
+        if self._is_unlimited():
+            self.usage_lbl.configure(text="무제한 (오프컷 플랜)")
+            return
+        self.usage_lbl.configure(
+            text=f"오늘 남은 다운로드 {self._remaining_today()} / {DAILY_DOWNLOAD_LIMIT}")
+
+    def _register_completed_download(self) -> None:
+        """완료된 영상 1개를 일일 사용량에 반영한다. 한도에 도달하면 진행 중인
+        작업(플레이리스트 등)을 멈춰 한도를 초과하지 않게 한다."""
+        if self._is_unlimited():
+            return
+        self._usage_count += 1
+        self._update_usage_label()
+        self._save_settings()
+        if self._usage_count >= DAILY_DOWNLOAD_LIMIT and self.is_downloading:
+            self.downloader.cancel()
 
     def _on_progress(self, d: dict) -> None:
         """yt-dlp progress hook. 모든 갱신은 UI 스레드(root.after)로 위임."""
@@ -1497,6 +1560,7 @@ class DownloaderApp:
                 widget.file_path = filepath
             widget.set_done()
             self.completed_dl_vids.add(vid)
+            self._register_completed_download()
 
     def _on_done(self, ok: bool, err: str | None) -> None:
         """다운로드(전체 작업) 종료 콜백.
@@ -1517,6 +1581,7 @@ class DownloaderApp:
                 if vid not in self.completed_dl_vids:
                     widget.set_done()
                     self.completed_dl_vids.add(vid)
+                    self._register_completed_download()
         else:
             vid = self.current_dl_vid
             widget = self.history_widgets.get(vid) if vid else None
