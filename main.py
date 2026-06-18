@@ -1552,20 +1552,23 @@ class DownloaderApp:
         dlg.geometry("560x470")
         dlg.transient(self.root)
         dlg.grab_set()
-        dlg.resizable(False, False)
+        dlg.resizable(False, True)   # 세로는 조절 가능(안전망)
+        dlg.minsize(560, 360)
         result = {"ok": False}
 
         fam = preferred_font_family()
         ttk.Label(dlg, text="이용약관 및 면책 고지",
-                  font=(fam, 14, "bold")).pack(pady=(18, 8))
+                  font=(fam, 14, "bold")).pack(side="top", pady=(18, 8))
+
+        # 버튼 줄을 먼저 '아래'에 고정해야, 본문 Text 가 길어도 버튼이 안 밀린다.
+        btns = ttk.Frame(dlg)
+        btns.pack(side="bottom", fill="x", padx=18, pady=14)
+
         txt = tk.Text(dlg, wrap="word", relief="flat", bg=COLOR_LOG_BG,
-                      padx=14, pady=10, font=(fam, 10))
+                      padx=14, pady=10, font=(fam, 10), height=12)
         txt.insert("1.0", TOS_BODY)
         txt.configure(state="disabled")
-        txt.pack(fill="both", expand=True, padx=18, pady=(0, 4))
-
-        btns = ttk.Frame(dlg)
-        btns.pack(fill="x", padx=18, pady=14)
+        txt.pack(side="top", fill="both", expand=True, padx=18, pady=(0, 4))
 
         def accept() -> None:
             result["ok"] = True
@@ -1576,9 +1579,12 @@ class DownloaderApp:
             result["ok"] = False
             dlg.destroy()
 
-        ttk.Button(btns, text="동의함", style="Accent.TButton",
-                   command=accept).pack(side="right")
+        ok_btn = ttk.Button(btns, text="동의함", style="Accent.TButton",
+                            command=accept)
+        ok_btn.pack(side="right")
         ttk.Button(btns, text="종료", command=decline).pack(side="right", padx=(0, 8))
+        ok_btn.focus_set()
+        dlg.bind("<Return>", lambda _e: accept())
         dlg.protocol("WM_DELETE_WINDOW", decline)
 
         self.root.wait_window(dlg)
@@ -1596,14 +1602,15 @@ class DownloaderApp:
             dlg.grab_set()
             dlg.resizable(False, False)
             fam = preferred_font_family()
+            ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(
+                side="bottom", pady=(4, 12))
             ttk.Label(dlg, text="이용해 주셔서 감사합니다!",
-                      font=(fam, 13, "bold")).pack(pady=(22, 6))
+                      font=(fam, 13, "bold")).pack(side="top", pady=(22, 6))
             promo = tk.Label(dlg, text=PROMO_TEXT, fg=COLOR_ACCENT, bg="#eef4ff",
                              cursor="hand2", padx=10, pady=12, wraplength=360,
                              justify="center", font=(fam, 10))
-            promo.pack(fill="x", padx=20, pady=8)
+            promo.pack(side="top", fill="x", padx=20, pady=8)
             promo.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
-            ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(pady=(4, 0))
             dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
             self.root.wait_window(dlg)
         except tk.TclError:
