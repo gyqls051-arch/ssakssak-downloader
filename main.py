@@ -229,6 +229,11 @@ def ffmpeg_cache_dir() -> Path:
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "ffmpeg" / "bin"
 
 
+def config_path() -> Path:
+    """사용자 설정(config.json) 저장 위치. 로그/ffmpeg 캐시와 같은 앱 폴더."""
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "config.json"
+
+
 def find_ffmpeg() -> str | None:
     """ffmpeg 경로 탐색. 자동 설치 캐시 → PyInstaller 번들 → PATH → 일반 위치 순."""
     from shutil import which
@@ -264,9 +269,8 @@ def find_ffmpeg() -> str | None:
 @dataclass
 class AnalysisResult:
     title: str
-    meta: str                 # 한 줄 요약
+    meta: str                 # 한 줄 요약 (플레이리스트 여부도 이 문구에 반영)
     heights: list[int] = field(default_factory=list)
-    is_playlist: bool = False
 
 
 class VideoAnalyzer:
@@ -288,7 +292,6 @@ class VideoAnalyzer:
             return AnalysisResult(
                 title=title, meta=meta,
                 heights=self._heights(first or {}),
-                is_playlist=True,
             )
 
         title = info.get("title", "(제목 없음)")
@@ -317,6 +320,10 @@ class VideoAnalyzer:
 #  서비스: 다운로드
 # ============================================================
 
+# 사용자가 취소했을 때 on_done(err) 로 전달되는 내부 신호값 (실제 에러 아님).
+DOWNLOAD_CANCELLED = "__offcut_cancelled__"
+
+
 @dataclass
 class DownloadConfig:
     url: str
@@ -343,6 +350,19 @@ class Downloader:
         # 항목(영상) 1개의 후처리까지 끝났을 때 호출. 플레이리스트에서
         # 각 항목을 개별 완료 처리하기 위한 콜백 (vid, 최종 경로 전달).
         self._on_item_done = on_item_done
+        # 취소 신호. run() 시작 시 clear, cancel() 시 set.
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        """진행 중인 다운로드를 다음 진행률 콜백 시점에 중단시킨다."""
+        self._cancel_event.set()
+
+    def _progress_hook(self, d: dict) -> None:
+        """yt-dlp progress hook 래퍼. 취소 요청이 있으면 DownloadCancelled 을
+        던져 다운로드를 즉시 멈추고, 아니면 앱 콜백으로 위임한다."""
+        if self._cancel_event.is_set():
+            raise yt_dlp.utils.DownloadCancelled()
+        self._on_progress(d)
 
     def _postprocessor_hook(self, d: dict) -> None:
         """yt-dlp postprocessor hook. 후처리(Merger/추출 등)가 끝나면 해당
@@ -358,11 +378,12 @@ class Downloader:
             self._on_item_done(vid, filepath)
 
     def run(self, cfg: DownloadConfig) -> None:
+        self._cancel_event.clear()
         opts: dict = {
             "outtmpl": os.path.join(cfg.out_dir, "%(title)s [%(id)s].%(ext)s"),
             "format": cfg.format_str,
             "noplaylist": False,
-            "progress_hooks": [self._on_progress],
+            "progress_hooks": [self._progress_hook],
             "postprocessor_hooks": [self._postprocessor_hook],
             "quiet": True,
             "no_warnings": True,
@@ -381,6 +402,9 @@ class Downloader:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([cfg.url])
             self._on_done(True, None)
+        except yt_dlp.utils.DownloadCancelled:
+            log.info("download cancelled by user")
+            self._on_done(False, DOWNLOAD_CANCELLED)
         except Exception as e:
             log.exception("download failed")
             self._on_done(False, str(e))
@@ -517,32 +541,33 @@ class FfmpegProgress:
 class FfmpegInstaller:
     """BtbN/FFmpeg-Builds 빌드를 받아 LOCALAPPDATA 에 캐시.
 
-    무결성 보호 (정확한 공식 SHA256 핀이 공개돼 있지 않아 현실적 대안 사용):
-    (a) 릴리스 태그를 'latest'(롤링) 대신 고정 태그로 핀 → RELEASE_TAG
-    (b) 다운로드 후 zip 무결성/구조 검증 (열림 + bin/ffmpeg.exe 존재 + 비정상 크기 차단)
-    (c) EXPECTED_SHA256 에 알려진 해시를 넣으면 다운로드 바이트와 대조
+    무결성 보호 (롤링 'latest' 태그와 호환되는 3중 방어):
+    (a) 다운로드한 zip 의 크기 sanity 범위 확인 (오류 HTML/잘린 파일 차단)
+    (b) GitHub API 가 게시하는 에셋의 authoritative SHA256(digest)을 받아
+        다운로드 바이트와 대조 → 전송 중 손상/변조 탐지 (다운로드와 분리된
+        api.github.com TLS 채널). API 를 못 받으면 경고만 남기고 (a)(c) 로만
+        진행해 설치를 막지 않는다.
+    (c) zip 구조 유효성 + bin/ffmpeg.exe 멤버 존재 확인
 
-    ※ 사용자(배포자) 조치 필요:
-       1) RELEASE_TAG 를 실제 배포 시점의 고정 릴리스 태그로 바꿀 것
-          (예: "autobuild-2024-XX-XX-XX-XX"). 'latest' 는 내용이 수시로
-          바뀌어 해시 핀과 양립할 수 없다.
-       2) 그 zip 의 SHA256 을 계산해 EXPECTED_SHA256 에 넣으면 완전 무결성
-          검증이 활성화된다. 비워 두면 (a)(b)만 적용된다.
-          해시 계산 예: certutil -hashfile <zip> SHA256
+    EXPECTED_SHA256 에 해시를 직접 박으면 API 조회 대신 그 값으로 고정 핀 한다
+    (가장 강하지만 'latest' 가 갱신되면 직접 갱신 필요). 비우면 (b) 동적 조회.
     """
 
-    # 'latest' 는 롤링 태그라 재현성/해시 핀이 불가능하다.
-    # 배포 시 아래를 고정 릴리스 태그로 교체하는 것을 권장한다.
+    GITHUB_REPO = "BtbN/FFmpeg-Builds"
     RELEASE_TAG = "latest"
     ASSET_NAME = "ffmpeg-master-latest-win64-gpl.zip"
 
     URL = (
-        "https://github.com/BtbN/FFmpeg-Builds/releases/download/"
+        f"https://github.com/{GITHUB_REPO}/releases/download/"
         f"{RELEASE_TAG}/{ASSET_NAME}"
     )
+    # 에셋 메타데이터(특히 sha256 digest) 조회용 GitHub API.
+    API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{RELEASE_TAG}"
 
-    # 알려진 zip 의 SHA256(소문자 hex). 비우면 해시 검증 생략. (위 주석 참고)
+    # 해시를 직접 고정하려면 소문자 hex 를 넣는다. 비우면 API 동적 조회.
     EXPECTED_SHA256 = ""
+    API_TIMEOUT = 10               # 초 (digest 조회)
+    API_MAX_BYTES = 1_000_000      # 릴리스 JSON 응답 크기 상한 (메모리 보호)
 
     DOWNLOAD_TIMEOUT = 60  # 초
     # 무결성: 받은 zip 크기 sanity 범위 (정상 win64-gpl zip 은 수십~수백 MB)
@@ -566,10 +591,11 @@ class FfmpegInstaller:
             self._cleanup(tmp_zip)
             return False
 
-        # 무결성 검증 (크기/zip 유효성/구조/해시). 실패 시 추출하지 않음.
+        # 무결성 검증 (크기/해시/zip 구조). 실패 시 추출하지 않음.
         on_progress(FfmpegProgress(stage="extracting", message="무결성 검증 중..."))
+        expected = self.EXPECTED_SHA256 or self._fetch_expected_digest()
         try:
-            self._verify_zip(tmp_zip)
+            self._verify_zip(tmp_zip, expected)
         except Exception as e:
             log.error("ffmpeg integrity check failed: %s", e)
             on_progress(FfmpegProgress(stage="error", message=f"무결성 검증 실패: {e}"))
@@ -610,10 +636,33 @@ class FfmpegInstaller:
                     ))
 
     @classmethod
-    def _verify_zip(cls, zip_path: Path) -> None:
+    def _fetch_expected_digest(cls) -> str | None:
+        """GitHub API 에서 에셋의 sha256 digest 를 가져온다 (소문자 hex).
+        네트워크/파싱 실패 시 None → 해시 검증은 생략하되 설치는 계속한다."""
+        try:
+            req = urllib.request.Request(
+                cls.API_URL,
+                headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}",
+                         "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=cls.API_TIMEOUT) as resp:
+                raw = resp.read(cls.API_MAX_BYTES)
+            data = json.loads(raw.decode("utf-8"))
+            for asset in data.get("assets") or []:
+                if asset.get("name") == cls.ASSET_NAME:
+                    digest = str(asset.get("digest") or "")
+                    if digest.startswith("sha256:"):
+                        return digest.split(":", 1)[1].strip().lower()
+                    return None
+        except Exception:
+            log.info("ffmpeg digest fetch skipped (offline or API error)")
+        return None
+
+    @classmethod
+    def _verify_zip(cls, zip_path: Path, expected_sha256: str | None = None) -> None:
         """다운로드한 zip 의 무결성을 검증한다.
         - 파일 크기 sanity 범위 확인 (오류 HTML/잘린 파일 차단)
-        - (해시 핀이 있으면) SHA256 대조
+        - expected_sha256 이 있으면 SHA256 대조 (불일치 시 예외)
         - zip 구조 유효성 + bin/ffmpeg.exe 멤버 존재 확인
         실패하면 예외를 던진다."""
         size = zip_path.stat().st_size
@@ -622,10 +671,10 @@ class FfmpegInstaller:
                 f"받은 파일 크기가 비정상입니다 ({size/1024/1024:.1f} MB)"
             )
 
-        # (c) 알려진 해시가 있으면 바이트 대조
-        if cls.EXPECTED_SHA256:
+        # (b) authoritative 해시가 있으면 바이트 대조
+        if expected_sha256:
             digest = cls._sha256(zip_path)
-            if digest.lower() != cls.EXPECTED_SHA256.strip().lower():
+            if digest.lower() != expected_sha256.strip().lower():
                 raise RuntimeError("SHA256 해시가 일치하지 않습니다 (변조 의심)")
 
         # (b) zip 유효성 + 예상 구조(bin/ffmpeg.exe) 확인
@@ -666,6 +715,38 @@ class FfmpegInstaller:
             path.unlink()
         except OSError:
             pass
+
+
+# ============================================================
+#  서비스: 사용자 설정 영속화
+# ============================================================
+
+class Settings:
+    """사용자 설정을 LOCALAPPDATA/config.json 에 읽고 쓴다. UI 비의존.
+
+    손상/부재 시 빈 dict 로 안전하게 폴백하고, 저장은 임시파일→교체로 원자적
+    처리해 쓰기 중 중단되어도 기존 설정이 깨지지 않는다."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path or config_path()
+
+    def load(self) -> dict:
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def save(self, data: dict) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            tmp.replace(self.path)   # 원자적 교체
+        except OSError:
+            log.exception("settings save failed")
 
 
 # ============================================================
@@ -806,6 +887,10 @@ class HistoryItemFrame(ttk.Frame):
         short = (err or "알 수 없는 오류").splitlines()[-1][:120]
         self.meta_lbl.configure(text=f"✗ 실패: {short}", foreground=COLOR_DANGER)
 
+    def set_cancelled(self) -> None:
+        self.progress.grid_forget()
+        self.meta_lbl.configure(text="■ 취소됨", foreground=COLOR_MUTED)
+
     # ---------- 내부 ----------
 
     def _open_in_folder(self) -> None:
@@ -905,6 +990,8 @@ class DownloaderApp:
         )
         self.updater = UpdateChecker()
         self.installer = FfmpegInstaller()
+        self.settings = Settings()
+        self._cfg = self.settings.load()   # 저장된 설정 (없으면 {})
 
         # 상태
         self.ffmpeg_dir = find_ffmpeg()
@@ -913,7 +1000,8 @@ class DownloaderApp:
         self.last_clipboard = ""
         self.last_analyzed_url = ""
         self.analyze_after_id: str | None = None
-        self.clipboard_auto = tk.BooleanVar(value=False)
+        self.clipboard_auto = tk.BooleanVar(
+            value=bool(self._cfg.get("clipboard_auto", False)))
         self.update_decision: UpdateDecision | None = None
         self._info_visible = False
         self._progress_visible = False
@@ -927,6 +1015,7 @@ class DownloaderApp:
         # 플레이리스트/다중 항목에서 각 항목을 한 번씩만 완료 처리하기 위함.
         self.completed_dl_vids: set[str] = set()
 
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
         self._tick_clipboard()
         self._check_update_async()
@@ -1010,7 +1099,8 @@ class DownloaderApp:
         cookie_row = ttk.Frame(inner)
         cookie_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         ttk.Label(cookie_row, text="로그인 쿠키").pack(side="left")
-        self.cookies_var = tk.StringVar(value=COOKIE_BROWSERS[0][0])
+        self.cookies_var = tk.StringVar(
+            value=self._cfg.get("cookies", COOKIE_BROWSERS[0][0]))
         cookie_combo = ttk.Combobox(
             cookie_row, textvariable=self.cookies_var,
             values=[label for label, _ in COOKIE_BROWSERS],
@@ -1045,7 +1135,8 @@ class DownloaderApp:
         # 옵션
         ttk.Label(inner, text="화질").grid(row=2, column=0, sticky="w", pady=6)
         # 기본 화질: 프리미어 호환성 우선 → 1080p (FHD)
-        self.quality_var = tk.StringVar(value="1080p (FHD)")
+        self.quality_var = tk.StringVar(
+            value=self._cfg.get("quality", "1080p (FHD)"))
         self.quality_combo = ttk.Combobox(
             inner, textvariable=self.quality_var,
             values=[label for label, _ in QUALITY_TABLE],
@@ -1054,7 +1145,8 @@ class DownloaderApp:
         self.quality_combo.grid(row=2, column=1, sticky="ew", padx=(12, 24), pady=6)
 
         ttk.Label(inner, text="포맷").grid(row=2, column=2, sticky="w", pady=6)
-        self.format_var = tk.StringVar(value=FORMAT_TABLE[0][0])
+        self.format_var = tk.StringVar(
+            value=self._cfg.get("format", FORMAT_TABLE[0][0]))
         ttk.Combobox(
             inner, textvariable=self.format_var,
             values=[label for label, _ in FORMAT_TABLE],
@@ -1063,7 +1155,7 @@ class DownloaderApp:
 
         ttk.Label(inner, text="저장 위치").grid(row=3, column=0, sticky="w", pady=(12, 6))
         default_dir = str(Path.home() / "Downloads" / "오프컷 다운로드")
-        self.save_dir_var = tk.StringVar(value=default_dir)
+        self.save_dir_var = tk.StringVar(value=self._cfg.get("save_dir", default_dir))
 
         save_row = ttk.Frame(inner)
         save_row.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(12, 0), pady=(12, 6))
@@ -1073,9 +1165,12 @@ class DownloaderApp:
         ttk.Button(save_row, text="열기", command=self._open_folder).grid(row=0, column=2, padx=(6, 0))
 
         # 부가 옵션 (모던 다운로더 기능)
-        self.embed_meta_var = tk.BooleanVar(value=True)
-        self.embed_subs_var = tk.BooleanVar(value=False)
-        self.sponsorblock_var = tk.BooleanVar(value=False)
+        self.embed_meta_var = tk.BooleanVar(
+            value=bool(self._cfg.get("embed_metadata", True)))
+        self.embed_subs_var = tk.BooleanVar(
+            value=bool(self._cfg.get("embed_subs", False)))
+        self.sponsorblock_var = tk.BooleanVar(
+            value=bool(self._cfg.get("sponsorblock", False)))
         opt_row = ttk.Frame(inner)
         opt_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(16, 0))
         ttk.Checkbutton(opt_row, text="메타데이터·썸네일 삽입",
@@ -1091,6 +1186,11 @@ class DownloaderApp:
             command=self._start_download,
         )
         self.download_btn.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(20, 0), ipady=6)
+
+        # 취소 버튼: 평소 숨김, 다운로드 중에만 표시
+        self.cancel_btn = ttk.Button(inner, text="취소", command=self._cancel_download)
+        self.cancel_btn.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        self.cancel_btn.grid_remove()
 
     def _build_progress_card(self) -> None:
         """다운로드 목록 카드 — 4K Downloader 식 항목 스택, 최신이 위."""
@@ -1310,10 +1410,14 @@ class DownloaderApp:
             ):
                 return
 
+        self._save_settings()   # 현재 선택을 기억 (크래시 대비해 시작 시점에 저장)
+
         self.is_downloading = True
         self.current_dl_vid = None
         self.completed_dl_vids = set()
         self.download_btn.configure(state="disabled", text="다운로드 중...")
+        self.cancel_btn.configure(state="normal", text="취소")
+        self.cancel_btn.grid()
         self._show_progress(True)
         log.info("download start url=%s format=%s", url, format_str)
 
@@ -1327,6 +1431,36 @@ class DownloaderApp:
             sponsorblock=self.sponsorblock_var.get(),
         )
         threading.Thread(target=self.downloader.run, args=(cfg,), daemon=True).start()
+
+    def _cancel_download(self) -> None:
+        """진행 중인 다운로드 취소 요청. 다음 진행률 콜백 때 실제로 멈춘다."""
+        if not self.is_downloading:
+            return
+        self.downloader.cancel()
+        self.cancel_btn.configure(state="disabled", text="취소 중...")
+
+    # ---------------- 설정 영속화 ----------------
+
+    def _collect_settings(self) -> dict:
+        """현재 UI 선택값을 config.json 에 저장할 dict 로 모은다."""
+        return {
+            "save_dir": self.save_dir_var.get(),
+            "cookies": self.cookies_var.get(),
+            "quality": self.quality_var.get(),
+            "format": self.format_var.get(),
+            "embed_metadata": self.embed_meta_var.get(),
+            "embed_subs": self.embed_subs_var.get(),
+            "sponsorblock": self.sponsorblock_var.get(),
+            "clipboard_auto": self.clipboard_auto.get(),
+        }
+
+    def _save_settings(self) -> None:
+        self.settings.save(self._collect_settings())
+
+    def _on_close(self) -> None:
+        """창 닫기: 설정을 저장하고 종료."""
+        self._save_settings()
+        self.root.destroy()
 
     def _on_progress(self, d: dict) -> None:
         """yt-dlp progress hook. 모든 갱신은 UI 스레드(root.after)로 위임."""
@@ -1374,7 +1508,9 @@ class DownloaderApp:
         실패 시에는 마지막 진행 항목에 오류를 표시한다."""
         self.is_downloading = False
         self.download_btn.configure(state="normal", text="다운로드 시작")
+        self.cancel_btn.grid_remove()
 
+        cancelled = (err == DOWNLOAD_CANCELLED)
         if ok:
             # hook으로 누락된 항목까지 일괄 완료 처리 (단일/다중 모두 안전).
             for vid, widget in self.history_widgets.items():
@@ -1384,11 +1520,12 @@ class DownloaderApp:
         else:
             vid = self.current_dl_vid
             widget = self.history_widgets.get(vid) if vid else None
-            if widget:
-                widget.set_error(err or "")
+            if widget and vid not in self.completed_dl_vids:
+                widget.set_cancelled() if cancelled else widget.set_error(err or "")
 
-        log.info("download done ok=%s items=%d", ok, len(self.completed_dl_vids))
-        if not ok:
+        log.info("download done ok=%s cancelled=%s items=%d",
+                 ok, cancelled, len(self.completed_dl_vids))
+        if not ok and not cancelled:
             messagebox.showerror(APP_TITLE, f"다운로드 실패:\n{err}")
 
     # ---------------- 히스토리 항목 관리 ----------------
