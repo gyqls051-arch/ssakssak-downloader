@@ -67,10 +67,16 @@ TOS_VERSION = "1"
 #    UTM 파라미터로 소유관계 노출 없이 유입량만 측정할 수 있다.
 PROMO_URL = "https://www.offcut.dev/?utm_source=ssakssak_downloader&utm_medium=app_banner"
 PROMO_TEXT = "광고 ｜ OFFCUT STUDIO — 영상 제작 올인원 워크스페이스 · 자세히 보기 →"
-# 광고 배너 이미지 URL. 원격이라 재빌드 없이 소재 교체 가능 — repo 에 banner.png 를
-# 올리면 자동 반영(없으면 텍스트 배너로 폴백). 권장 728×90(레티나 2배 1456×180).
+# 광고 배너 이미지 URL. 원격이라 재빌드 없이 소재 교체 가능 — repo 에 올리면
+# 자동 반영(없으면 텍스트 배너로 폴백).
+# 1) 하단 띠배너 banner.png — 권장 728×90 (더 크게는 728×150 까지)
 PROMO_IMAGE_URL = "https://raw.githubusercontent.com/gyqls051-arch/ssakssak-downloader/main/banner.png"
-PROMO_IMAGE_MAXW = 700   # 앱 하단 폭에 맞춰 이 너비로 축소
+PROMO_IMAGE_MAXW = 700   # 하단 띠배너 최대 폭
+PROMO_IMAGE_MAXH = 150   # 하단 띠배너 최대 높이 (이 박스 안에 비율 유지로 맞춤)
+# 2) 종료 시 크게 띄울 배너 exit_banner.png — 권장 600×450 (레티나 2배 1200×900)
+PROMO_EXIT_IMAGE_URL = "https://raw.githubusercontent.com/gyqls051-arch/ssakssak-downloader/main/exit_banner.png"
+PROMO_EXIT_MAXW = 600
+PROMO_EXIT_MAXH = 460
 
 # 첫 실행 면책 고지 본문.
 TOS_BODY = (
@@ -1143,8 +1149,12 @@ class DownloaderApp:
         self.promo_lbl.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
         # 원격 배너 이미지가 지정돼 있으면 받아서 텍스트 대신 표시(실패 시 텍스트 유지)
         self._promo_photo = None
-        if PROMO_IMAGE_URL and PIL_AVAILABLE:
-            threading.Thread(target=self._fetch_promo_image, daemon=True).start()
+        self._exit_promo_photo = None   # 종료 시 큰 배너 (미리 받아둠)
+        if PIL_AVAILABLE:
+            if PROMO_IMAGE_URL:
+                threading.Thread(target=self._fetch_promo_image, daemon=True).start()
+            if PROMO_EXIT_IMAGE_URL:
+                threading.Thread(target=self._fetch_exit_promo_image, daemon=True).start()
 
         # 헤더
         header = ttk.Frame(self.container)
@@ -1653,30 +1663,41 @@ class DownloaderApp:
         return result["ok"]
 
     def _show_exit_promo(self) -> None:
-        """종료 시 광고 1회 노출 (외부 광고주 배너처럼). 실패해도 종료를 막지 않음."""
+        """종료 시 광고 1회 노출. 큰 배너 이미지가 준비됐으면 크게, 아니면 텍스트."""
         try:
             dlg = tk.Toplevel(self.root)
             dlg.title("이용해 주셔서 감사합니다")
-            dlg.geometry("420x210")
             dlg.transient(self.root)
             dlg.grab_set()
             dlg.resizable(False, False)
             fam = preferred_font_family()
+
             ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(
-                side="bottom", pady=(4, 12))
+                side="bottom", pady=(6, 14))
             ttk.Label(dlg, text="이용해 주셔서 감사합니다!",
-                      font=(fam, 13, "bold")).pack(side="top", pady=(22, 6))
-            promo = tk.Label(dlg, text=PROMO_TEXT, fg=COLOR_ACCENT, bg="#eef4ff",
-                             cursor="hand2", padx=10, pady=12, wraplength=360,
-                             justify="center", font=(fam, 10))
-            promo.pack(side="top", fill="x", padx=20, pady=8)
-            promo.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
+                      font=(fam, 13, "bold")).pack(side="top", pady=(18, 8))
+
+            if self._exit_promo_photo is not None:
+                w, h = self._exit_promo_photo.width(), self._exit_promo_photo.height()
+                img_lbl = tk.Label(dlg, image=self._exit_promo_photo,
+                                   cursor="hand2", bd=0)
+                img_lbl.pack(side="top", padx=24, pady=10)
+                img_lbl.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
+                dlg.geometry(f"{w + 56}x{h + 130}")
+            else:
+                promo = tk.Label(dlg, text=PROMO_TEXT, fg=COLOR_ACCENT, bg="#eef4ff",
+                                 cursor="hand2", padx=10, pady=12, wraplength=360,
+                                 justify="center", font=(fam, 10))
+                promo.pack(side="top", fill="x", padx=20, pady=8)
+                promo.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
+                dlg.geometry("420x210")
+
             dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
             self.root.wait_window(dlg)
         except tk.TclError:
             pass
 
-    def _fetch_promo_image(self, url: str = "") -> None:
+    def _fetch_promo_image(self) -> None:
         # 다운로드/디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임.
         try:
             req = urllib.request.Request(
@@ -1684,9 +1705,7 @@ class DownloaderApp:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = resp.read(5_000_000)
             img = Image.open(io.BytesIO(data)).convert("RGB")
-            if img.width > PROMO_IMAGE_MAXW:
-                ratio = PROMO_IMAGE_MAXW / img.width
-                img = img.resize((PROMO_IMAGE_MAXW, max(1, int(img.height * ratio))))
+            img.thumbnail((PROMO_IMAGE_MAXW, PROMO_IMAGE_MAXH))   # 비율 유지로 박스 안에
         except Exception as e:
             log.info("promo image fetch failed: %s", e)
             return
@@ -1700,6 +1719,26 @@ class DownloaderApp:
             return
         self._promo_photo = photo   # 참조 유지 (GC 방지)
         self.promo_lbl.configure(image=photo, text="")
+
+    def _fetch_exit_promo_image(self) -> None:
+        # 종료 시 크게 띄울 배너를 미리 받아둔다(종료가 안 끊기게).
+        try:
+            req = urllib.request.Request(
+                PROMO_EXIT_IMAGE_URL, headers={"User-Agent": HTTP_UA})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = resp.read(8_000_000)
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            img.thumbnail((PROMO_EXIT_MAXW, PROMO_EXIT_MAXH))
+        except Exception as e:
+            log.info("exit promo image fetch failed: %s", e)
+            return
+        self.root.after(0, self._apply_exit_promo_image, img)
+
+    def _apply_exit_promo_image(self, img: object) -> None:
+        try:
+            self._exit_promo_photo = ImageTk.PhotoImage(img)   # 메인 스레드 생성
+        except Exception as e:
+            log.info("exit promo render failed: %s", e)
 
     def _enforce_sticky_kill(self) -> bool:
         """이전에 받은 원격 정지(killswitch)가 있으면 강제 종료한다(오프라인 포함).
