@@ -1768,18 +1768,22 @@ class DownloaderApp:
             self.root.after(0, self._update_history_merging, vid, fname)
 
     def _on_item_done(self, vid: str, filepath: str | None = None) -> None:
-        """항목(영상) 1개의 후처리가 끝났을 때 호출 (vid별 개별 완료 처리).
-        플레이리스트에서 각 항목이 끝나는 즉시 완료 표시되도록 한다."""
-        if not vid or vid in self.completed_dl_vids:
+        """항목(영상) 1개의 후처리 단계가 끝날 때마다 호출된다.
+
+        후처리가 진행되며 최종 경로가 바뀔 수 있어(예: 음성 .webm→.mp3) 매번
+        file_path 를 최신으로 갱신하고 표시를 새로고침한다. 사용량 집계와 완료
+        등록은 vid 당 한 번만 한다."""
+        if not vid:
             return
         widget = self.history_widgets.get(vid)
-        if widget:
-            if filepath:
-                # 병합/추출 후의 최종 경로로 갱신 (임시 조각 파일명 교체).
-                widget.file_path = filepath
-            widget.set_done()
+        if not widget:
+            return
+        if filepath:
+            widget.file_path = filepath        # 마지막 후처리 경로가 최종 파일
+        if vid not in self.completed_dl_vids:  # 집계는 1회만
             self.completed_dl_vids.add(vid)
             self._register_completed_download()
+        widget.set_done()                      # 최종 경로/크기 반영 (반복 호출 안전)
 
     def _on_done(self, ok: bool, err: str | None) -> None:
         """다운로드(전체 작업) 종료 콜백.
