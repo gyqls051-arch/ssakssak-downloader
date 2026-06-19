@@ -56,6 +56,10 @@ APP_VERSION = "1.2"
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
 
+# HTTP User-Agent 는 반드시 ASCII 여야 한다(헤더는 latin-1). 한글 APP_TITLE 을
+# 넣으면 UnicodeEncodeError 로 모든 요청이 실패하므로 ASCII APP_ID 를 쓴다.
+HTTP_UA = f"{APP_ID}/{APP_VERSION}"
+
 # 무료 일일 다운로드 한도 (완료된 영상 개수 기준, 자정에 리셋).
 # config.json 의 카운트라 삭제로 우회 가능 — 엄격한 DRM 이 아니라 과도한
 # 사용 억제용. 무제한 전환은 _is_unlimited() 한 곳만 교체.
@@ -524,7 +528,7 @@ class UpdateChecker:
         try:
             req = urllib.request.Request(
                 self.url,
-                headers={"User-Agent": f"{APP_TITLE}/{self.current_version}"},
+                headers={"User-Agent": HTTP_UA},
             )
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read(VERSION_JSON_MAX_BYTES + 1)
@@ -665,7 +669,7 @@ class FfmpegInstaller:
     def _download(self, url: str, dest: Path,
                   on_progress: Callable[[FfmpegProgress], None]) -> None:
         req = urllib.request.Request(
-            url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
+            url, headers={"User-Agent": HTTP_UA})
         with urllib.request.urlopen(req, timeout=self.DOWNLOAD_TIMEOUT) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
@@ -689,7 +693,7 @@ class FfmpegInstaller:
         try:
             req = urllib.request.Request(
                 cls.API_URL,
-                headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}",
+                headers={"User-Agent": HTTP_UA,
                          "Accept": "application/vnd.github+json"},
             )
             with urllib.request.urlopen(req, timeout=cls.API_TIMEOUT) as resp:
@@ -1472,7 +1476,7 @@ class DownloaderApp:
         # (Tkinter 객체는 메인 스레드에서만 생성 가능 — 안 그러면 frozen 에서 실패).
         try:
             req = urllib.request.Request(
-                thumb_url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
+                thumb_url, headers={"User-Agent": HTTP_UA})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = resp.read(3_000_000)
             img = Image.open(io.BytesIO(data)).convert("RGB")
@@ -1860,7 +1864,7 @@ class DownloaderApp:
         # 네트워크 + 디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임.
         try:
             req = urllib.request.Request(
-                url, headers={"User-Agent": f"{APP_TITLE}/{APP_VERSION}"})
+                url, headers={"User-Agent": HTTP_UA})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = resp.read(2_000_000)
             img = Image.open(io.BytesIO(data)).convert("RGB")

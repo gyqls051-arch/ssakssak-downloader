@@ -31,6 +31,13 @@ def test_parse_and_compare_versions():
     assert compare_versions("2.0", "1.9") == 1
 
 
+def test_http_user_agent_is_latin1_safe():
+    # HTTP 헤더는 latin-1 만 허용 → UA 에 한글(APP_TITLE)이 들어가면 모든
+    # urllib 요청이 UnicodeEncodeError 로 실패한다. ASCII 보장 회귀 테스트.
+    main.HTTP_UA.encode("latin-1")          # 예외 나면 실패
+    assert "싹" not in main.HTTP_UA
+
+
 @pytest.mark.parametrize("url,ok", [
     ("https://youtube.com/watch?v=x", True),
     ("http://example.com", True),
