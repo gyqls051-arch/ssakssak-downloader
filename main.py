@@ -67,6 +67,10 @@ TOS_VERSION = "1"
 #    UTM 파라미터로 소유관계 노출 없이 유입량만 측정할 수 있다.
 PROMO_URL = "https://offcut.kr/?utm_source=ssakssak_downloader&utm_medium=app_banner"
 PROMO_TEXT = "광고 ｜ OFFCUT STUDIO — 영상 제작 올인원 워크스페이스 · 자세히 보기 →"
+# 광고 배너 이미지 URL (선택). 비우면 위 텍스트 배너만 쓴다. 원격이라 재빌드
+# 없이 소재 교체 가능. 권장 크기 728×90 (레티나용 2배 1456×180), 가로 비율 ~8:1.
+PROMO_IMAGE_URL = ""
+PROMO_IMAGE_MAXW = 700   # 앱 하단 폭에 맞춰 이 너비로 축소
 
 # 첫 실행 면책 고지 본문.
 TOS_BODY = (
@@ -1137,6 +1141,10 @@ class DownloaderApp:
         )
         self.promo_lbl.pack(side="bottom", fill="x", pady=(6, 0))
         self.promo_lbl.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
+        # 원격 배너 이미지가 지정돼 있으면 받아서 텍스트 대신 표시(실패 시 텍스트 유지)
+        self._promo_photo = None
+        if PROMO_IMAGE_URL and PIL_AVAILABLE:
+            threading.Thread(target=self._fetch_promo_image, daemon=True).start()
 
         # 헤더
         header = ttk.Frame(self.container)
@@ -1667,6 +1675,31 @@ class DownloaderApp:
             self.root.wait_window(dlg)
         except tk.TclError:
             pass
+
+    def _fetch_promo_image(self, url: str = "") -> None:
+        # 다운로드/디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임.
+        try:
+            req = urllib.request.Request(
+                PROMO_IMAGE_URL, headers={"User-Agent": HTTP_UA})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = resp.read(5_000_000)
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+            if img.width > PROMO_IMAGE_MAXW:
+                ratio = PROMO_IMAGE_MAXW / img.width
+                img = img.resize((PROMO_IMAGE_MAXW, max(1, int(img.height * ratio))))
+        except Exception as e:
+            log.info("promo image fetch failed: %s", e)
+            return
+        self.root.after(0, self._apply_promo_image, img)
+
+    def _apply_promo_image(self, img: object) -> None:
+        try:
+            photo = ImageTk.PhotoImage(img)   # 메인 스레드에서 생성
+        except Exception as e:
+            log.info("promo image render failed: %s", e)
+            return
+        self._promo_photo = photo   # 참조 유지 (GC 방지)
+        self.promo_lbl.configure(image=photo, text="")
 
     def _enforce_sticky_kill(self) -> bool:
         """이전에 받은 원격 정지(killswitch)가 있으면 강제 종료한다(오프라인 포함).

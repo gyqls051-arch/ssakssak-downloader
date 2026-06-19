@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>싹싹김치 다운로드 — 유튜브·인스타·비메오 영상 다운로더</title>
+<meta name="description" content="유튜브, 인스타그램, 비메오, 틱톡 등 1800개 이상 사이트의 영상을 원하는 화질로 저장하는 무료 다운로더. 설치 없이 실행.">
+<!-- ▼▼ 배포 시 이 두 값만 바꾸세요 ▼▼ -->
+<!--  DOWNLOAD_URL : GitHub Releases 의 .exe 직링크(또는 releases/latest)  -->
+<!--  OFFCUT_URL   : 광고 배너가 열 주소(UTM 포함)                          -->
+<style>
+  :root{
+    --accent:#0078d4; --ink:#1b1b1f; --muted:#5c5c66; --line:#e6e6ee; --bg:#f6f7fb;
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{font-family:"Segoe UI Variable","Segoe UI",-apple-system,"Apple SD Gothic Neo",
+       "Malgun Gothic",sans-serif;color:var(--ink);background:var(--bg);line-height:1.6}
+  .wrap{max-width:880px;margin:0 auto;padding:0 20px}
+  header{padding:64px 0 40px;text-align:center}
+  .logo{font-size:34px;font-weight:800;letter-spacing:-.5px}
+  .tag{color:var(--muted);font-size:17px;margin-top:10px}
+  .cta{display:inline-flex;align-items:center;gap:10px;margin-top:28px;background:var(--accent);
+       color:#fff;text-decoration:none;font-size:18px;font-weight:700;padding:16px 34px;
+       border-radius:12px;box-shadow:0 6px 20px rgba(0,120,212,.28)}
+  .cta:hover{filter:brightness(1.05)}
+  .sub{color:var(--muted);font-size:13px;margin-top:12px}
+  section{background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;margin:18px 0}
+  h2{font-size:18px;margin:0 0 14px}
+  .feat{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px}
+  .feat div{font-size:14px;color:#33333a}
+  .feat b{display:block;font-size:15px;color:var(--ink);margin-bottom:2px}
+  .note{font-size:14px;color:#33333a}
+  .note code{background:var(--bg);padding:2px 7px;border-radius:6px;font-size:13px}
+  /* 광고 배너: 외부 광고주처럼 노출 (권장 이미지 728×90, 레티나 2배 1456×180) */
+  .ad{display:block;text-align:center;margin:18px 0}
+  .ad small{display:block;color:#aaa;font-size:11px;margin-bottom:6px;letter-spacing:1px}
+  .ad img{width:100%;max-width:728px;height:auto;border-radius:10px;border:1px solid var(--line)}
+  footer{color:var(--muted);font-size:12px;text-align:center;padding:30px 0 60px}
+  footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">🥬 싹싹김치 다운로드</div>
+      <div class="tag">유튜브·인스타그램·비메오·틱톡 등 영상을 원하는 화질로 저장</div>
+      <!-- DOWNLOAD_URL 로 교체 -->
+      <a class="cta" href="DOWNLOAD_URL" download>⬇  Windows용 다운로드 (무료)</a>
+      <div class="sub">설치 불필요 · 실행 파일 하나 · 약 41MB</div>
+    </header>
+
+    <!-- 광고 배너 (상단) -->
+    <a class="ad" href="OFFCUT_URL" target="_blank" rel="noopener">
+      <small>AD</small>
+      <!-- 광고 이미지 src 를 교체 (권장 728×90) -->
+      <img src="banner.png" alt="OFFCUT STUDIO — 영상 제작 올인원 워크스페이스">
+    </a>
+
+    <section>
+      <h2>주요 기능</h2>
+      <div class="feat">
+        <div><b>1800+ 사이트</b>유튜브·인스타·비메오·틱톡·X 등</div>
+        <div><b>원하는 화질</b>최고 8K까지, MP3 음원 추출도</div>
+        <div><b>썸네일 미리보기</b>받기 전에 어떤 영상인지 확인</div>
+        <div><b>완전 무료·무제한</b>가입·결제 없음</div>
+      </div>
+    </section>
+
+    <section>
+      <h2>설치 방법</h2>
+      <p class="note">
+        ① 위 <b>다운로드</b> 버튼 클릭 → ② 받은 <code>SsakSsakKimchiDownloader.exe</code> 실행<br>
+        ③ 처음 실행 시 Windows 보호 화면이 뜨면 <b>추가 정보 → 실행</b> 을 눌러주세요
+        (서명되지 않은 개인 개발 프로그램이라 나타나는 정상 안내입니다).<br>
+        ④ 첫 실행 때 필요한 파일을 자동으로 받습니다(인터넷 필요, 1회).
+      </p>
+    </section>
+
+    <footer>
+      본 프로그램은 사용자가 접근 권한을 가진 영상의 개인적 저장을 위한 도구입니다.
+      저작권 준수 책임은 사용자에게 있습니다.<br>
+      문의: <a href="mailto:YOUR_EMAIL">YOUR_EMAIL</a>
+    </footer>
+  </div>
+</body>
+</html>
