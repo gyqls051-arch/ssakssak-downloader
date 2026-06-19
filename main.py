@@ -50,7 +50,7 @@ except ImportError:
 # ============================================================
 
 APP_TITLE = "싹싹김치 다운로드"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -65,11 +65,11 @@ TOS_VERSION = "1"
 # 제휴 광고 배너 — 외부 광고주처럼 노출된다 (앱 소유와 무관한 일반 광고 슬롯).
 # ※ 아래 도메인을 실제 홍보 대상 홈페이지 주소로 교체하세요.
 #    UTM 파라미터로 소유관계 노출 없이 유입량만 측정할 수 있다.
-PROMO_URL = "https://offcut.kr/?utm_source=ssakssak_downloader&utm_medium=app_banner"
+PROMO_URL = "https://www.offcut.dev/?utm_source=ssakssak_downloader&utm_medium=app_banner"
 PROMO_TEXT = "광고 ｜ OFFCUT STUDIO — 영상 제작 올인원 워크스페이스 · 자세히 보기 →"
-# 광고 배너 이미지 URL (선택). 비우면 위 텍스트 배너만 쓴다. 원격이라 재빌드
-# 없이 소재 교체 가능. 권장 크기 728×90 (레티나용 2배 1456×180), 가로 비율 ~8:1.
-PROMO_IMAGE_URL = ""
+# 광고 배너 이미지 URL. 원격이라 재빌드 없이 소재 교체 가능 — repo 에 banner.png 를
+# 올리면 자동 반영(없으면 텍스트 배너로 폴백). 권장 728×90(레티나 2배 1456×180).
+PROMO_IMAGE_URL = "https://raw.githubusercontent.com/gyqls051-arch/ssakssak-downloader/main/banner.png"
 PROMO_IMAGE_MAXW = 700   # 앱 하단 폭에 맞춰 이 너비로 축소
 
 # 첫 실행 면책 고지 본문.
@@ -90,7 +90,7 @@ TOS_BODY = (
 # 업데이트 채널. 브랜드 격리를 위해 OFFCUT 과 무관한 별도(가능하면 별도 계정/조직)
 # 공개 저장소에 version.json 을 올리고 아래 <your-account> 자리를 채우세요.
 # <your-account> 가 남아 있으면 업데이트 체크를 건너뜁니다(=배포 전 안전 기본값).
-VERSION_INFO_URL = "https://raw.githubusercontent.com/<your-account>/ssakssak-downloader/main/version.json"
+VERSION_INFO_URL = "https://raw.githubusercontent.com/gyqls051-arch/ssakssak-downloader/main/version.json"
 VERSION_CHECK_TIMEOUT = 3.0   # 초
 VERSION_JSON_MAX_BYTES = 10_000  # 응답 크기 제한 (메모리 보호)
 
