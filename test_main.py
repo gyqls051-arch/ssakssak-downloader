@@ -38,6 +38,14 @@ def test_http_user_agent_is_latin1_safe():
     assert "싹" not in main.HTTP_UA
 
 
+def test_looks_like_login_error():
+    assert main.looks_like_login_error("ERROR: Sign in to confirm your age")
+    assert main.looks_like_login_error("This video is private")
+    assert main.looks_like_login_error("멤버십 전용: 로그인이 필요합니다")
+    assert not main.looks_like_login_error("HTTP Error 404: Not Found")
+    assert not main.looks_like_login_error("Unable to download webpage: timed out")
+
+
 @pytest.mark.parametrize("url,ok", [
     ("https://youtube.com/watch?v=x", True),
     ("http://example.com", True),

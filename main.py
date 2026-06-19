@@ -115,21 +115,6 @@ FORMAT_TABLE: list[tuple[str, str]] = [
     ("MKV (최고화질·무손실)", "mkv"),
 ]
 
-# 로그인 쿠키를 읽어올 브라우저 라벨 → yt-dlp 브라우저 이름(None=사용 안 함).
-# 인스타그램 비공개/로그인 영상, 멤버십 영상 등을 받을 때 사용한다.
-# Firefox 를 권장: Chrome/Edge 는 2024-07 이후 App-Bound Encryption 으로
-# 외부 쿠키 추출이 막히는 경우가 많다. (해당 브라우저는 닫은 상태여야 안정적)
-COOKIE_BROWSERS: list[tuple[str, str | None]] = [
-    ("사용 안 함",        None),
-    ("Firefox (권장)",   "firefox"),
-    ("Chrome",          "chrome"),
-    ("Edge",            "edge"),
-    ("Brave",           "brave"),
-    ("Opera",           "opera"),
-    ("Vivaldi",         "vivaldi"),
-    ("Whale",           "whale"),
-]
-
 # 일반 동영상 링크 인식 (http/https). yt-dlp 가 지원하는 1800+ 사이트를 모두
 # 시도할 수 있도록, 유튜브 전용이 아니라 모든 http(s) URL 을 받아들인다.
 URL_RE = re.compile(r"^https?://[^\s]+", re.IGNORECASE)
@@ -295,6 +280,42 @@ def find_ffmpeg() -> str | None:
         if guess.exists():
             for sub in guess.rglob("ffmpeg.exe"):
                 return str(sub.parent)
+    return None
+
+
+def looks_like_login_error(err: str) -> bool:
+    """yt-dlp 오류 메시지가 '로그인/인증 필요'로 보이면 True.
+    이때만 쿠키를 자동으로 한 번 더 시도한다(평소엔 쿠키를 건드리지 않음)."""
+    e = (err or "").lower()
+    keys = (
+        "login", "log in", "sign in", "private", "members-only", "member-only",
+        "available to this channel's members", "account", "authenticat",
+        "cookies", "age-restricted", "age restricted", "confirm your age",
+        "로그인", "회원", "비공개",
+    )
+    return any(k in e for k in keys)
+
+
+def detect_cookie_browser() -> str | None:
+    """쿠키 DB 가 실제로 존재하는 브라우저를 우선순위대로 찾아 yt-dlp 이름을
+    돌려준다(없으면 None). 로그인 필요한 영상에서만 자동 폴백용으로 쓴다."""
+    local = Path(os.environ.get("LOCALAPPDATA", "") or "")
+    appdata = Path(os.environ.get("APPDATA", "") or "")
+    candidates = [
+        ("chrome",  local / "Google" / "Chrome" / "User Data"),
+        ("edge",    local / "Microsoft" / "Edge" / "User Data"),
+        ("whale",   local / "Naver" / "Naver Whale" / "User Data"),
+        ("brave",   local / "BraveSoftware" / "Brave-Browser" / "User Data"),
+        ("firefox", appdata / "Mozilla" / "Firefox" / "Profiles"),
+        ("vivaldi", local / "Vivaldi" / "User Data"),
+        ("opera",   appdata / "Opera Software" / "Opera Stable"),
+    ]
+    for name, path in candidates:
+        try:
+            if path.exists():
+                return name
+        except OSError:
+            pass
     return None
 
 
@@ -1057,8 +1078,8 @@ class DownloaderApp:
         self.last_clipboard = ""
         self.last_analyzed_url = ""
         self.analyze_after_id: str | None = None
-        self.clipboard_auto = tk.BooleanVar(
-            value=bool(self._cfg.get("clipboard_auto", False)))
+        # 로그인 필요한 영상에서 분석이 자동으로 찾아낸 브라우저(다운로드에 재사용).
+        self._auto_cookie_browser: str | None = None
         self.update_decision: UpdateDecision | None = None
         self._info_visible = False
         self._progress_visible = False
@@ -1169,30 +1190,12 @@ class DownloaderApp:
                   anchor="w", wraplength=640, justify="left"
                   ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
-        ttk.Checkbutton(
-            inner,
-            text="클립보드 자동 감지 (URL 복사 시 자동 채움)",
-            variable=self.clipboard_auto,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-        # 로그인 쿠키 (인스타 비공개·멤버십 등): 분석 전부터 고를 수 있도록 여기 둔다.
-        cookie_row = ttk.Frame(inner)
-        cookie_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        ttk.Label(cookie_row, text="로그인 쿠키").pack(side="left")
-        self.cookies_var = tk.StringVar(
-            value=self._cfg.get("cookies", COOKIE_BROWSERS[0][0]))
-        cookie_combo = ttk.Combobox(
-            cookie_row, textvariable=self.cookies_var,
-            values=[label for label, _ in COOKIE_BROWSERS],
-            state="readonly", width=16,
-        )
-        cookie_combo.pack(side="left", padx=(10, 12))
-        cookie_combo.bind("<<ComboboxSelected>>", self._on_cookie_changed)
+        # 클립보드 자동 감지 + 로그인 쿠키는 사용자에게 노출하지 않고 자동 처리.
         ttk.Label(
-            cookie_row,
-            text="인스타·멤버십 등 로그인 영상에 필요 (해당 브라우저는 닫아두세요)",
-            style="Hint.TLabel", wraplength=380, justify="left",
-        ).pack(side="left")
+            inner,
+            text="💡 영상 링크를 복사하면 자동으로 채워집니다. 로그인이 필요한 영상도 자동으로 처리해요.",
+            style="Hint.TLabel", anchor="w", wraplength=640, justify="left",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     def _build_info_card(self) -> None:
         card = ttk.LabelFrame(self.container, text="  영상 정보  ")
@@ -1257,20 +1260,16 @@ class DownloaderApp:
         ttk.Button(save_row, text="찾기", command=self._pick_folder).grid(row=0, column=1, padx=(8, 0))
         ttk.Button(save_row, text="열기", command=self._open_folder).grid(row=0, column=2, padx=(6, 0))
 
-        # 부가 옵션 (모던 다운로더 기능)
-        self.embed_meta_var = tk.BooleanVar(
-            value=bool(self._cfg.get("embed_metadata", True)))
+        # 부가 옵션 (메타데이터·썸네일 삽입은 항상 켜는 좋은 기본값이라 숨김)
         self.embed_subs_var = tk.BooleanVar(
             value=bool(self._cfg.get("embed_subs", False)))
         self.sponsorblock_var = tk.BooleanVar(
             value=bool(self._cfg.get("sponsorblock", False)))
         opt_row = ttk.Frame(inner)
         opt_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(16, 0))
-        ttk.Checkbutton(opt_row, text="메타데이터·썸네일 삽입",
-                        variable=self.embed_meta_var).pack(side="left", padx=(0, 16))
         ttk.Checkbutton(opt_row, text="자막 포함 (ko/en)",
                         variable=self.embed_subs_var).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(opt_row, text="SponsorBlock 구간 제거",
+        ttk.Checkbutton(opt_row, text="SponsorBlock 구간 제거 (유튜브)",
                         variable=self.sponsorblock_var).pack(side="left")
 
         self.download_btn = ttk.Button(
@@ -1385,15 +1384,6 @@ class DownloaderApp:
             self.root.after_cancel(self.analyze_after_id)
         self.analyze_after_id = self.root.after(600, self._maybe_analyze)
 
-    def _on_cookie_changed(self, _event: object | None = None) -> None:
-        """쿠키 브라우저가 바뀌면 같은 URL 도 다시 분석한다 (로그인 영상 대비)."""
-        self.last_analyzed_url = ""
-        self._on_url_changed()
-
-    def _selected_cookie_browser(self) -> str | None:
-        """현재 선택된 쿠키 브라우저의 yt-dlp 이름 (없으면 None)."""
-        return dict(COOKIE_BROWSERS).get(self.cookies_var.get())
-
     def _maybe_analyze(self) -> None:
         url = self.url_var.get().strip()
         if not url:
@@ -1411,19 +1401,33 @@ class DownloaderApp:
         self.is_analyzing = True
         self.url_status_var.set("⏳ 영상 정보 분석 중...")
         threading.Thread(
-            target=self._analyze_worker,
-            args=(url, self._selected_cookie_browser()), daemon=True,
+            target=self._analyze_worker, args=(url,), daemon=True,
         ).start()
 
-    def _analyze_worker(self, url: str, cookies_browser: str | None) -> None:
+    def _analyze_worker(self, url: str) -> None:
         try:
-            result = self.analyzer.probe(url, cookies_browser)
+            result, browser = self._probe_with_auto_cookies(url)
+            self._auto_cookie_browser = browser   # 다운로드에 재사용
             self.root.after(0, self._apply_analysis, url, result)
         except Exception as e:
             log.exception("analysis failed")
             self.root.after(0, self._apply_analysis_error, url, str(e))
         finally:
             self.is_analyzing = False
+
+    def _probe_with_auto_cookies(self, url: str) -> tuple[AnalysisResult, str | None]:
+        """쿠키 없이 먼저 분석하고, 로그인 오류면 설치된 브라우저 쿠키로 1회 재시도.
+        (결과, 사용한 브라우저 or None)을 돌려준다. 끝까지 실패하면 예외 전파."""
+        try:
+            return self.analyzer.probe(url, None), None
+        except Exception as e:
+            if not looks_like_login_error(str(e)):
+                raise
+            browser = detect_cookie_browser()
+            if not browser:
+                raise
+            log.info("retrying analysis with %s cookies", browser)
+            return self.analyzer.probe(url, browser), browser
 
     def _apply_analysis(self, url: str, result: AnalysisResult) -> None:
         # URL이 다시 바뀐 뒤 늦게 도착한 결과는 버린다.
@@ -1500,7 +1504,8 @@ class DownloaderApp:
         self.info_thumb.create_image(80, 45, image=photo)
 
     def _tick_clipboard(self) -> None:
-        if self.clipboard_auto.get() and not self.is_downloading:
+        # 항상 자동 감지: 동영상 링크를 복사하면(새 내용일 때만) URL 칸을 채운다.
+        if not self.is_downloading:
             try:
                 txt = self.root.clipboard_get().strip()
                 if (txt and txt != self.last_clipboard
@@ -1573,8 +1578,8 @@ class DownloaderApp:
             url=url, out_dir=str(save_dir),
             format_str=format_str, is_audio_only=is_audio_only,
             container=container, ffmpeg_dir=self.ffmpeg_dir,
-            cookies_browser=self._selected_cookie_browser(),
-            embed_metadata=self.embed_meta_var.get(),
+            cookies_browser=self._auto_cookie_browser,   # 로그인 영상이면 자동 감지된 값
+            embed_metadata=True,                         # 항상 메타데이터·썸네일 삽입
             embed_subs=self.embed_subs_var.get(),
             sponsorblock=self.sponsorblock_var.get(),
         )
@@ -1593,13 +1598,10 @@ class DownloaderApp:
         """현재 UI 선택값을 config.json 에 저장할 dict 로 모은다."""
         return {
             "save_dir": self.save_dir_var.get(),
-            "cookies": self.cookies_var.get(),
             "quality": self.quality_var.get(),
             "format": self.format_var.get(),
-            "embed_metadata": self.embed_meta_var.get(),
             "embed_subs": self.embed_subs_var.get(),
             "sponsorblock": self.sponsorblock_var.get(),
-            "clipboard_auto": self.clipboard_auto.get(),
             "usage_date": self._usage_date,
             "usage_count": self._usage_count,
             "tos_accepted": self._cfg.get("tos_accepted"),
