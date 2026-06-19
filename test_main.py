@@ -101,15 +101,11 @@ def _opts_for(**kw):
     return opts
 
 
-def test_configure_output_video_all_options_order():
-    o = _opts_for(embed_metadata=True, embed_subs=True, sponsorblock=True)
+def test_configure_output_video_metadata():
+    o = _opts_for(embed_metadata=True)
     keys = [p["key"] for p in o["postprocessors"]]
-    # yt-dlp CLI 생성 순서와 동일해야 한다.
-    assert keys == ["SponsorBlock", "FFmpegEmbedSubtitle", "ModifyChapters",
-                    "FFmpegMetadata", "EmbedThumbnail"]
-    # SponsorBlock categories 는 반드시 set 타입
-    assert isinstance(o["postprocessors"][0]["categories"], set)
-    assert o["writesubtitles"] and o["subtitleslangs"] == ["ko", "en"]
+    # 영상: 메타데이터 → 썸네일 순 (yt-dlp CLI 순서와 동일)
+    assert keys == ["FFmpegMetadata", "EmbedThumbnail"]
     assert o["writethumbnail"] and o["merge_output_format"] == "mp4"
 
 

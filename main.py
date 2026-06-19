@@ -410,8 +410,6 @@ class DownloadConfig:
     ffmpeg_dir: str | None
     cookies_browser: str | None = None   # yt-dlp 브라우저 이름 (None=사용 안 함)
     embed_metadata: bool = True          # 메타데이터 + 썸네일(커버) 삽입
-    embed_subs: bool = False             # 자막 다운로드 후 삽입 (영상 전용)
-    sponsorblock: bool = False           # SponsorBlock 광고/홍보 구간 제거 (영상 전용)
 
 
 class Downloader:
@@ -489,28 +487,14 @@ class Downloader:
     def _configure_output(cfg: DownloadConfig, opts: dict) -> None:
         """출력 포맷 + 후처리 파이프라인을 opts 에 채운다.
 
-        후처리 추가 순서는 yt-dlp CLI(parse_options)가 생성하는 순서와 동일하게
-        맞춘다: [SponsorBlock] → [EmbedSubtitle] → [ModifyChapters] →
-        FFmpegMetadata → EmbedThumbnail. 순서가 어긋나면 챕터/자막/메타데이터가
-        서로를 덮어쓸 수 있어 그대로 따른다."""
+        후처리 순서(FFmpegMetadata → EmbedThumbnail)는 yt-dlp CLI 가 생성하는
+        순서와 동일하게 맞춘다."""
         pps: list[dict] = []
         if cfg.is_audio_only:
             pps.append({"key": "FFmpegExtractAudio",
                         "preferredcodec": "mp3", "preferredquality": "192"})
         else:
             opts["merge_output_format"] = cfg.container
-            sb_cats = {"sponsor", "selfpromo", "interaction"}
-            if cfg.sponsorblock:
-                pps.append({"key": "SponsorBlock", "categories": sb_cats,
-                            "when": "after_filter"})
-            if cfg.embed_subs:
-                opts["writesubtitles"] = True
-                opts["subtitleslangs"] = ["ko", "en"]
-                pps.append({"key": "FFmpegEmbedSubtitle",
-                            "already_have_subtitle": False})
-            if cfg.sponsorblock:
-                pps.append({"key": "ModifyChapters",
-                            "remove_sponsor_segments": sb_cats})
 
         if cfg.embed_metadata:
             opts["writethumbnail"] = True
@@ -1263,18 +1247,7 @@ class DownloaderApp:
         ttk.Button(save_row, text="찾기", command=self._pick_folder).grid(row=0, column=1, padx=(8, 0))
         ttk.Button(save_row, text="열기", command=self._open_folder).grid(row=0, column=2, padx=(6, 0))
 
-        # 부가 옵션 (메타데이터·썸네일 삽입은 항상 켜는 좋은 기본값이라 숨김)
-        self.embed_subs_var = tk.BooleanVar(
-            value=bool(self._cfg.get("embed_subs", False)))
-        self.sponsorblock_var = tk.BooleanVar(
-            value=bool(self._cfg.get("sponsorblock", False)))
-        opt_row = ttk.Frame(inner)
-        opt_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(16, 0))
-        ttk.Checkbutton(opt_row, text="자막 포함 (ko/en)",
-                        variable=self.embed_subs_var).pack(side="left", padx=(0, 16))
-        ttk.Checkbutton(opt_row, text="SponsorBlock 구간 제거 (유튜브)",
-                        variable=self.sponsorblock_var).pack(side="left")
-
+        # 메타데이터·썸네일 삽입은 항상 켜는 좋은 기본값이라 옵션 노출 없음.
         self.download_btn = ttk.Button(
             inner, text="다운로드 시작",
             style="Accent.TButton",
@@ -1573,8 +1546,6 @@ class DownloaderApp:
             container=container, ffmpeg_dir=self.ffmpeg_dir,
             cookies_browser=self._auto_cookie_browser,   # 로그인 영상이면 자동 감지된 값
             embed_metadata=True,                         # 항상 메타데이터·썸네일 삽입
-            embed_subs=self.embed_subs_var.get(),
-            sponsorblock=self.sponsorblock_var.get(),
         )
         threading.Thread(target=self.downloader.run, args=(cfg,), daemon=True).start()
 
@@ -1593,8 +1564,6 @@ class DownloaderApp:
             "save_dir": self.save_dir_var.get(),
             "quality": self.quality_var.get(),
             "format": self.format_var.get(),
-            "embed_subs": self.embed_subs_var.get(),
-            "sponsorblock": self.sponsorblock_var.get(),
             "tos_accepted": self._cfg.get("tos_accepted"),
             "killed": self._cfg.get("killed", False),
             "killed_message": self._cfg.get("killed_message", ""),
