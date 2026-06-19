@@ -1,0 +1,8 @@
+{
+  "latest_version": "1.2",
+  "min_supported_version": "1.0",
+  "killswitch": false,
+  "killswitch_message": "사이트 정책 변경 대응 중입니다. 잠시 후 새 버전을 배포하겠습니다.",
+  "download_url": "https://github.com/gyqls051-arch/ssakssak-downloader/releases/latest",
+  "release_notes": "멀티사이트·자동 쿠키·썸네일 미리보기·취소·무료 무제한"
+}
