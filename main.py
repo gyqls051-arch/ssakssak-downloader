@@ -1111,6 +1111,7 @@ class Api:
         self._last_clip = ""
         self._cur_id: str | None = None
         self._cur_filepath: str | None = None
+        self._info_pushed = False        # 다운로드 중 제목/썸네일을 한 번만 채우기
         self._files: dict[str, str] = {}
         self._is_downloading = False
         self._maxed = False
@@ -1177,8 +1178,16 @@ class Api:
             "qualities": [lbl for lbl, _ in QUALITY_TABLE],
             "formats": [lbl for lbl, _ in FORMAT_TABLE],
             "promo_url": PROMO_URL,
-            "hint": "링크를 복사하면 자동으로 채워지고, 분석 결과가 팝업으로 표시됩니다.",
+            "hint": "링크를 붙여넣으면 바로 다운로드가 시작됩니다. (화질·포맷은 ⚙ 설정의 기본값)",
         }
+
+    def set_defaults(self, quality: str, fmt: str) -> None:
+        """설정에서 고른 기본 화질·포맷을 저장한다(붙여넣기 즉시 다운로드에 사용)."""
+        if quality:
+            self._cfg["quality"] = quality
+        if fmt:
+            self._cfg["format"] = fmt
+        self._settings.save(self._cfg)
 
     def accept_tos(self) -> None:
         self._cfg["tos_accepted"] = TOS_VERSION
@@ -1227,6 +1236,7 @@ class Api:
 
         self._cur_id = job_id
         self._cur_filepath = None
+        self._info_pushed = False
         self._is_downloading = True
         cfg = DownloadConfig(
             url=url, out_dir=str(save_dir), format_str=fmt_str,
@@ -1328,6 +1338,15 @@ class Api:
     def _on_progress(self, d: dict) -> None:
         if self._cur_id is None:
             return
+        # 분석 없이 바로 다운로드하므로, 추출이 끝나 정보가 들어오면 제목·썸네일을
+        # 한 번 목록 항목에 채워준다 (붙여넣자마자 항목이 떠 있고 곧 채워지는 UX).
+        if not self._info_pushed:
+            info = d.get("info_dict") or {}
+            title = info.get("title")
+            if title:
+                self._info_pushed = True
+                self._js("dlInfo('%s',%s)" % (self._cur_id, json.dumps(
+                    {"title": title, "thumb": info.get("thumbnail") or ""})))
         status = d.get("status")
         if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
