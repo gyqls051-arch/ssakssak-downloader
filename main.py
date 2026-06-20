@@ -281,6 +281,13 @@ def ffmpeg_cache_dir() -> Path:
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "ffmpeg" / "bin"
 
 
+def ytdlp_cache_dir() -> str:
+    """yt-dlp 플레이어 JS/서명 캐시 위치. 분석(extract_info)이 매번 플레이어 JS 를
+    다시 받지 않도록 영속 캐시를 둬 반복 분석을 조금 더 빠르게 한다."""
+    return str(Path(os.environ.get("LOCALAPPDATA") or Path.home())
+               / APP_ID / "ytdlp-cache")
+
+
 def config_path() -> Path:
     """사용자 설정(config.json) 저장 위치. 로그/ffmpeg 캐시와 같은 앱 폴더."""
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "config.json"
@@ -373,7 +380,8 @@ class VideoAnalyzer:
     """yt-dlp로 메타데이터만 가져온다 (다운로드 X). UI 비의존."""
 
     def probe(self, url: str, cookies_browser: str | None = None) -> AnalysisResult:
-        opts: dict = {"quiet": True, "no_warnings": True, "skip_download": True}
+        opts: dict = {"quiet": True, "no_warnings": True, "skip_download": True,
+                      "cachedir": ytdlp_cache_dir()}
         if cookies_browser:
             # (browser, profile, keyring, container) 4-튜플이어야 한다.
             opts["cookiesfrombrowser"] = (cookies_browser, None, None, None)
@@ -559,6 +567,7 @@ class Downloader:
             "retries": 10,
             "fragment_retries": 10,
             "socket_timeout": SOCKET_TIMEOUT,
+            "cachedir": ytdlp_cache_dir(),
         }
         if cfg.ffmpeg_dir:
             opts["ffmpeg_location"] = cfg.ffmpeg_dir
@@ -1257,14 +1266,25 @@ class Api:
     def open_item(self, job_id: str) -> None:
         fp = self._files.get(job_id)
         if not fp:
+            self.open_folder()                       # 경로 모르면 저장 폴더라도 연다
             return
-        try:
-            subprocess.run(["explorer", f"/select,{fp}"], check=False)
-        except Exception:
+        p = Path(fp)
+        # 파일을 선택한 채 탐색기 열기. explorer 는 반드시 /select,"전체경로" 형식의
+        # '문자열'로 넘겨야 한다. 리스트로 넘기면 따옴표가 통째로 감싸져 explorer 가
+        # 경로를 못 알아듣고 기본(문서) 폴더를 열어버린다 — 그게 이 버그였다.
+        if p.exists():
             try:
-                os.startfile(str(Path(fp).parent))  # noqa: S606
-            except OSError:
+                subprocess.run(f'explorer /select,"{os.path.normpath(str(p))}"')
+                return
+            except Exception:
                 pass
+        # 폴백: 파일이 있던 폴더(없으면 저장 폴더)를 연다
+        folder = p.parent if p.parent.exists() else Path(
+            self._cfg.get("save_dir", self._default_dir()))
+        try:
+            os.startfile(str(folder))  # noqa: S606
+        except OSError:
+            self.open_folder()
 
     def play_item(self, job_id: str) -> None:
         fp = self._files.get(job_id)

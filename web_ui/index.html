@@ -252,16 +252,14 @@
     <div class="mbody">
       <div class="field">
         <span class="lbl">저장 위치</span>
-        <div style="display:flex;gap:6px;margin-top:6px">
-          <input id="sSave" type="text" readonly>
-          <button class="btn-sec" style="height:34px" onclick="pickFolder()">찾기</button>
-          <button class="btn-sec" style="height:34px" onclick="openFolder()">열기</button>
+        <div style="display:flex;gap:7px;margin-top:7px;align-items:center">
+          <input id="sSave" type="text" readonly style="flex:1;min-width:0">
+          <button class="btn-sec" style="height:34px;flex:none;white-space:nowrap;padding:0 18px" onclick="pickFolder()">찾기</button>
+          <button class="btn-sec" style="height:34px;flex:none;white-space:nowrap;padding:0 18px" onclick="openFolder()">열기</button>
         </div>
       </div>
-      <div style="border-top:1px solid #eef0f2;margin-top:15px;padding-top:14px;display:flex;align-items:center;gap:8px">
-        <span class="dot" id="sDot" style="width:6px;height:6px;border-radius:50%;background:#1a7f37"></span>
-        <span style="font-size:12px;color:#6a7079" id="sFf">ffmpeg 상태</span>
-        <button class="btn-primary" style="margin-left:auto" onclick="closeSettings()">완료</button>
+      <div style="margin-top:20px;padding-top:15px;border-top:1px solid #eef0f2;display:flex">
+        <button class="btn-primary" style="margin-left:auto;padding:0 22px" onclick="closeSettings()">완료</button>
       </div>
     </div>
   </div>
@@ -324,8 +322,6 @@ async function boot(){
   $('appTitle').textContent = INIT.app_title;
   $('appVer').textContent = 'v' + INIT.version;
   setStatus(INIT.ffmpeg_ok);
-  $('sFf').textContent = INIT.ffmpeg_ok ? 'ffmpeg 설치됨 · 준비 완료' : '추가 파일 필요 (첫 실행 시 자동 설치)';
-  $('sDot').style.background = INIT.ffmpeg_ok ? '#1a7f37' : '#c42b1c';
   fillSelect('aQuality', INIT.qualities, INIT.quality);
   fillSelect('aFormat', INIT.formats, INIT.format);
   $('sSave').value = INIT.save_dir;
@@ -341,7 +337,7 @@ bootWhenReady();
 
 function setStatus(ok){
   $('stDot').className = 'dot' + (ok ? '' : ' bad');
-  $('stText').textContent = ok ? '준비 완료 · ffmpeg 설치됨' : '추가 파일 필요 — 첫 다운로드 시 자동 설치';
+  $('stText').textContent = ok ? '준비 완료' : '준비 중…';
 }
 function fillSelect(id, arr, val){
   const s = $(id); s.innerHTML = '';
@@ -461,8 +457,6 @@ function dlDone(id, info){
 function ffmpegStatus(text, ok){
   $('stText').textContent = text;
   $('stDot').className = 'dot' + (ok ? '' : ' bad');
-  $('sFf').textContent = text;
-  $('sDot').style.background = ok ? '#1a7f37' : '#c42b1c';
   if(ok) INIT.ffmpeg_ok = true;
 }
 function dlError(id, msg){
