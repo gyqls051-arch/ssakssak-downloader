@@ -41,7 +41,7 @@ import yt_dlp
 # ============================================================
 
 APP_TITLE = "싹싹김치 다운로드"
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -124,6 +124,36 @@ VIDEO_HOST_RE = re.compile(
     r"tv\.kakao\.com|soundcloud\.com|streamable\.com)",
     re.IGNORECASE,
 )
+
+# ── 성공률 보강용 상수 ──────────────────────────────────────
+# 일부 사이트는 우리 앱 UA(HTTP_UA)나 yt-dlp 기본 UA 를 막는다. 다운로드가
+# 실패하면 흔한 데스크톱 브라우저 UA + Referer/Origin 헤더로 한 번 더 시도한다.
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+# 멈춘 연결에 무한 대기하지 않게 하는 네트워크 타임아웃(초).
+SOCKET_TIMEOUT = 30
+
+# DRM(기술적 보호조치) 보호 콘텐츠로 보이는 오류 키워드. 감지되면 우회를
+# 절대 시도하지 않고(불법) 즉시 명확히 안내한 뒤 중단한다.
+DRM_HINTS = ("drm", "widevine", "playready", "fairplay")
+
+# 2단계 폴백: yt-dlp 가 사이트를 인식 못 할 때, 페이지 HTML 에서 직접 찾을
+# 스트리밍 매니페스트(HLS .m3u8 / DASH .mpd) 패턴.
+MANIFEST_RE = re.compile(
+    r"""https?://[^\s"'<>\\]+?\.(?:m3u8|mpd)(?:\?[^\s"'<>\\]*)?""",
+    re.IGNORECASE,
+)
+
+# Playwright(2단계 최후폴백)는 '소스로 직접 실행할 때'(=개발자/개인)에만 켜진다.
+# PyInstaller 로 빌드한 배포 exe(frozen)에서는 항상 OFF → 배포본엔 #7 이 빠지고
+# 토글도 없다. (배포 exe 는 build.bat 의 --exclude-module playwright 로 코드까지
+# 아예 제외된다.) 개인이 소스로 쓰려면 별도 설치 필요:
+#   pip install playwright && playwright install chromium
+# (설치 안 해도 프로그램은 정상 동작 — 이 폴백만 자동으로 건너뜀)
+ENABLE_PLAYWRIGHT = not getattr(sys, "frozen", False)
 
 
 # ============================================================
@@ -320,6 +350,13 @@ def detect_cookie_browser() -> str | None:
     return None
 
 
+def looks_like_drm(err: str) -> bool:
+    """오류 메시지가 DRM 보호 콘텐츠로 보이면 True. 이때는 재시도/우회하지 않고
+    'DRM 미지원'을 사용자에게 안내한 뒤 중단한다(DRM 우회는 불법이라 미구현)."""
+    e = (err or "").lower()
+    return any(k in e for k in DRM_HINTS)
+
+
 # ============================================================
 #  서비스: 영상 정보 분석
 # ============================================================
@@ -407,6 +444,7 @@ class DownloadConfig:
     ffmpeg_dir: str | None
     cookies_browser: str | None = None   # yt-dlp 브라우저 이름 (None=사용 안 함)
     embed_metadata: bool = True          # 메타데이터 + 썸네일(커버) 삽입
+    use_playwright: bool = False         # 2단계 최후폴백. 소스(개인)=True, 배포 exe=False
 
 
 class Downloader:
@@ -415,12 +453,15 @@ class Downloader:
     def __init__(self,
                  on_progress: Callable[[dict], None],
                  on_done: Callable[[bool, str | None], None],
-                 on_item_done: Callable[[str, str | None], None] | None = None):
+                 on_item_done: Callable[[str, str | None], None] | None = None,
+                 on_status: Callable[[str], None] | None = None):
         self._on_progress = on_progress
         self._on_done = on_done
         # 항목(영상) 1개의 후처리까지 끝났을 때 호출. 플레이리스트에서
         # 각 항목을 개별 완료 처리하기 위한 콜백 (vid, 최종 경로 전달).
         self._on_item_done = on_item_done
+        # 폴백 재시도/2단계 진입 시 사용자에게 보여줄 상태 문구 콜백 (선택).
+        self._on_status = on_status or (lambda _msg: None)
         # 취소 신호. run() 시작 시 clear, cancel() 시 set.
         self._cancel_event = threading.Event()
 
@@ -449,10 +490,66 @@ class Downloader:
             self._on_item_done(vid, filepath)
 
     def run(self, cfg: DownloadConfig) -> None:
+        """단계적 폴백으로 다운로드 성공률을 높인다.
+
+        1단계(yt-dlp): 기본 → 브라우저 쿠키 → 브라우저 헤더 → 포맷 낮춤 순으로
+                       하나라도 성공할 때까지 재시도.
+        2단계(yt-dlp 미지원): 페이지 HTML 에서 HLS/DASH 매니페스트를 직접 찾아
+                       yt-dlp 에 재투입. (옵트인 시) Playwright 로 네트워크 가로채기.
+        DRM 감지 시: 우회하지 않고 즉시 안내 후 중단."""
         self._cancel_event.clear()
+        base = self._base_opts(cfg)
+        last_err: str | None = None
+
+        # ── 1단계: 옵션을 바꿔가며 재시도 ──────────────────────
+        for i, (label, extra) in enumerate(self._attempt_plan(cfg)):
+            if self._cancel_event.is_set():
+                self._on_done(False, DOWNLOAD_CANCELLED)
+                return
+            if i > 0:                       # 첫 시도는 조용히, 재시도부터 안내
+                self._on_status(f"{label}…")
+            try:
+                log.info("download attempt %d: %s", i + 1, label)
+                with yt_dlp.YoutubeDL({**base, **extra}) as ydl:
+                    ydl.download([cfg.url])
+                self._on_done(True, None)
+                return
+            except yt_dlp.utils.DownloadCancelled:
+                log.info("download cancelled by user")
+                self._on_done(False, DOWNLOAD_CANCELLED)
+                return
+            except Exception as e:
+                msg = str(e)
+                if looks_like_drm(msg):
+                    log.info("DRM content detected; bypass not attempted")
+                    self._on_done(False, "DRM 보호 콘텐츠는 지원하지 않습니다.")
+                    return
+                last_err = msg
+                log.info("attempt failed (%s): %s", label,
+                         (msg.splitlines()[-1] if msg else "")[:160])
+
+        # ── 2단계: yt-dlp 가 전부 실패 → 직접 스트림 탐색 ──────
+        if not self._cancel_event.is_set():
+            try:
+                if self._try_stage2(cfg, base):
+                    self._on_done(True, None)
+                    return
+            except yt_dlp.utils.DownloadCancelled:
+                self._on_done(False, DOWNLOAD_CANCELLED)
+                return
+            except Exception:
+                log.exception("stage2 fallback error")
+
+        if self._cancel_event.is_set():
+            self._on_done(False, DOWNLOAD_CANCELLED)
+        else:
+            log.error("all download attempts failed")
+            self._on_done(False, last_err or "다운로드에 실패했습니다.")
+
+    def _base_opts(self, cfg: DownloadConfig) -> dict:
+        """모든 시도가 공유하는 기본 yt-dlp 옵션 (포맷/쿠키/헤더는 시도별로 덮음)."""
         opts: dict = {
             "outtmpl": os.path.join(cfg.out_dir, "%(title)s [%(id)s].%(ext)s"),
-            "format": cfg.format_str,
             "noplaylist": False,
             "progress_hooks": [self._progress_hook],
             "postprocessor_hooks": [self._postprocessor_hook],
@@ -461,24 +558,159 @@ class Downloader:
             "concurrent_fragment_downloads": 4,
             "retries": 10,
             "fragment_retries": 10,
+            "socket_timeout": SOCKET_TIMEOUT,
         }
         if cfg.ffmpeg_dir:
             opts["ffmpeg_location"] = cfg.ffmpeg_dir
-        if cfg.cookies_browser:
-            # (browser, profile, keyring, container) 4-튜플이어야 한다.
-            opts["cookiesfrombrowser"] = (cfg.cookies_browser, None, None, None)
         self._configure_output(cfg, opts)
+        return opts
 
+    @staticmethod
+    def _headers_for(url: str) -> dict:
+        """사이트가 직링크 접근을 막을 때 쓰는 브라우저 위장 헤더."""
+        try:
+            p = urllib.parse.urlparse(url)
+            origin = f"{p.scheme}://{p.netloc}" if p.scheme and p.netloc else ""
+        except ValueError:
+            origin = ""
+        h = {"User-Agent": BROWSER_UA}
+        if origin:
+            h["Referer"] = origin + "/"
+            h["Origin"] = origin
+        return h
+
+    def _attempt_plan(self, cfg: DownloadConfig) -> list[tuple[str, dict]]:
+        """시도 순서(라벨, 덮어쓸 옵션)를 만든다. 쉬운 것부터 점점 강하게."""
+        fmt = cfg.format_str
+        headers = self._headers_for(cfg.url)
+        # 분석 단계에서 쿠키가 필요했으면 그걸, 아니면 설치된 브라우저를 탐지.
+        cookie = cfg.cookies_browser or detect_cookie_browser()
+        cookie_opt = (
+            {"cookiesfrombrowser": (cookie, None, None, None)} if cookie else {}
+        )
+
+        plan: list[tuple[str, dict]] = []
+        # 1) 기본 (분석 때 쿠키가 필요했던 경우엔 그 쿠키 포함)
+        first: dict = {"format": fmt}
+        if cfg.cookies_browser:
+            first["cookiesfrombrowser"] = (cfg.cookies_browser, None, None, None)
+        plan.append(("기본 다운로드", first))
+        # 2) 브라우저 쿠키 (1단계에서 아직 안 썼고, 쓸 쿠키가 있을 때만)
+        if cookie_opt and not cfg.cookies_browser:
+            plan.append(("브라우저 쿠키로 재시도", {"format": fmt, **cookie_opt}))
+        # 3) 브라우저 헤더(Referer/Origin/UA) + 쿠키
+        plan.append(("브라우저 헤더로 재시도",
+                     {"format": fmt, "http_headers": headers, **cookie_opt}))
+        # 4) 포맷 낮춰 재시도 (영상만; 음성은 의미 없음)
+        if not cfg.is_audio_only:
+            plan.append(("호환 포맷으로 재시도",
+                         {"format": "best", "http_headers": headers, **cookie_opt}))
+            plan.append(("최저 화질로 재시도",
+                         {"format": "worst", "http_headers": headers, **cookie_opt}))
+        return plan
+
+    def _try_stage2(self, cfg: DownloadConfig, base: dict) -> bool:
+        """yt-dlp 가 사이트를 인식 못 했을 때의 폴백.
+
+        (a) 페이지 HTML 에서 .m3u8/.mpd 를 직접 찾아 그 매니페스트를 yt-dlp 에
+            재투입한다 (HLS 세그먼트 다운로드와 ffmpeg 병합은 yt-dlp 가 처리).
+        (b) (소스·개인 실행 시에만) Playwright 로 실제 페이지를 띄워 네트워크
+            요청에서 스트림 URL 을 가로챈다. 배포 exe 는 cfg.use_playwright=False."""
+        # (a) HTML 직접 스캔
+        self._on_status("스트림 직접 탐색 중…")
+        manifest = self._scan_manifest(cfg.url)
+        if manifest and not self._cancel_event.is_set():
+            log.info("stage2(a): manifest found, retrying via yt-dlp")
+            if self._download_manifest(manifest, cfg, base):
+                return True
+
+        # (b) Playwright (옵트인)
+        if cfg.use_playwright and not self._cancel_event.is_set():
+            self._on_status("브라우저로 스트림 탐색 중…")
+            manifest = self._playwright_sniff(cfg.url)
+            if manifest and not self._cancel_event.is_set():
+                log.info("stage2(b): manifest sniffed via playwright")
+                if self._download_manifest(manifest, cfg, base):
+                    return True
+        return False
+
+    @staticmethod
+    def _scan_manifest(page_url: str) -> str | None:
+        """페이지 HTML 에서 .m3u8/.mpd 링크를 직접 찾는다 (HLS 우선)."""
+        req = urllib.request.Request(page_url, headers={
+            "User-Agent": BROWSER_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml,*/*",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=SOCKET_TIMEOUT) as resp:
+                raw = resp.read(5 * 1024 * 1024)        # 5MB 상한 (메모리 보호)
+            html = raw.decode("utf-8", "replace").replace("\\/", "/")
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
+
+        m3u8: list[str] = []
+        mpd: list[str] = []
+        seen: set[str] = set()
+        for u in MANIFEST_RE.findall(html):
+            u = u.replace("&amp;", "&")
+            if u in seen:
+                continue
+            seen.add(u)
+            (m3u8 if ".m3u8" in u.lower() else mpd).append(u)
+        picks = m3u8 or mpd
+        return picks[0] if picks else None
+
+    def _download_manifest(self, manifest_url: str,
+                           cfg: DownloadConfig, base: dict) -> bool:
+        """찾은 매니페스트(HLS/DASH)를 yt-dlp 로 받는다. 취소는 상위로 전파."""
+        opts = {**base, "format": "best", "http_headers": self._headers_for(cfg.url)}
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([cfg.url])
-            self._on_done(True, None)
+                ydl.download([manifest_url])
+            return True
         except yt_dlp.utils.DownloadCancelled:
-            log.info("download cancelled by user")
-            self._on_done(False, DOWNLOAD_CANCELLED)
+            raise
         except Exception as e:
-            log.exception("download failed")
-            self._on_done(False, str(e))
+            msg = str(e)
+            log.info("manifest download failed: %s",
+                     (msg.splitlines()[-1] if msg else "")[:160])
+            return False
+
+    @staticmethod
+    def _playwright_sniff(page_url: str) -> str | None:
+        """(옵트인) 헤드리스 브라우저로 페이지를 열어 네트워크 요청에서 스트림
+        URL(.m3u8/.mpd)을 가로챈다. Playwright 가 설치돼 있을 때만 동작한다.
+        설치 안 돼 있으면 조용히 건너뛴다(일반 사용자는 설치 불필요)."""
+        try:
+            from playwright.sync_api import sync_playwright   # 지연 import (옵트인)
+        except ImportError:
+            log.warning("playwright 미설치 — playwright 폴백 건너뜀 "
+                        "(설치: pip install playwright && playwright install)")
+            return None
+        found: list[str] = []
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                page = browser.new_page(user_agent=BROWSER_UA)
+
+                def _on_response(resp) -> None:
+                    u = resp.url
+                    if ".m3u8" in u.lower() or ".mpd" in u.lower():
+                        found.append(u)
+
+                page.on("response", _on_response)
+                try:
+                    page.goto(page_url, wait_until="networkidle", timeout=30000)
+                except Exception:
+                    pass   # 타임아웃이어도 그때까지 잡은 URL 은 활용
+                browser.close()
+        except Exception as e:
+            log.info("playwright sniff failed: %s", e)
+            return None
+        for u in found:
+            if ".m3u8" in u.lower():
+                return u
+        return found[0] if found else None
 
     @staticmethod
     def _configure_output(cfg: DownloadConfig, opts: dict) -> None:
@@ -873,6 +1105,7 @@ class Api:
             on_progress=self._on_progress,
             on_done=self._on_done,
             on_item_done=self._on_item_done,
+            on_status=self._on_status,
         )
 
     def set_window(self, w) -> None:
@@ -985,6 +1218,8 @@ class Api:
             url=url, out_dir=str(save_dir), format_str=fmt_str,
             is_audio_only=is_audio, container=container, ffmpeg_dir=self.ffmpeg_dir,
             cookies_browser=self._auto_cookie_browser, embed_metadata=True,
+            # 소스 실행(개인)=True, 배포 exe=False. 사용자용 토글은 없음.
+            use_playwright=ENABLE_PLAYWRIGHT,
         )
         log.info("download start id=%s url=%s", job_id, url)
         threading.Thread(target=self.downloader.run, args=(cfg,), daemon=True).start()
@@ -1081,6 +1316,11 @@ class Api:
             )
         elif status == "finished":
             self._js(f"dlMerging('{self._cur_id}')")
+
+    def _on_status(self, text: str) -> None:
+        """폴백 재시도/2단계 진입 시 현재 항목에 진행 상태 문구를 보여준다."""
+        if self._cur_id is not None:
+            self._js(f"dlStatus('{self._cur_id}',{json.dumps(text)})")
 
     def _on_item_done(self, vid: str, filepath: str | None = None) -> None:
         if self._cur_id is None:

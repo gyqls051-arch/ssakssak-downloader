@@ -232,3 +232,96 @@ def test_fetch_expected_digest_network_error_returns_none(monkeypatch):
         raise OSError("offline")
     monkeypatch.setattr(main.urllib.request, "urlopen", boom)
     assert FfmpegInstaller._fetch_expected_digest() is None       # 안전 폴백
+
+
+# ----------------------- DRM 감지 -----------------------
+
+def test_looks_like_drm():
+    assert main.looks_like_drm("ERROR: This video is DRM protected")
+    assert main.looks_like_drm("Widevine license required")
+    assert main.looks_like_drm("Content uses PlayReady")
+    assert not main.looks_like_drm("HTTP Error 403: Forbidden")
+    assert not main.looks_like_drm("Sign in to confirm your age")
+
+
+# ------------------- 매니페스트(HLS/DASH) 스캔 -------------------
+
+def test_manifest_re_finds_hls_and_dash():
+    html = (
+        '<video><source src="https://cdn.x.com/a/master.m3u8?token=1"></video>'
+        ' 그리고 https://cdn.x.com/b/manifest.mpd 도 있음'
+    )
+    found = main.MANIFEST_RE.findall(html)
+    assert any(".m3u8" in u for u in found)
+    assert any(".mpd" in u for u in found)
+
+
+def test_manifest_re_ignores_plain_media():
+    assert main.MANIFEST_RE.findall("https://x.com/video.mp4 https://x.com/a.jpg") == []
+
+
+# ------------------- 폴백 헤더 / 시도 계획 -------------------
+
+def test_headers_for_fills_referer_and_origin():
+    h = Downloader._headers_for("https://site.com/watch?v=1")
+    assert h["User-Agent"] == main.BROWSER_UA
+    assert h["Origin"] == "https://site.com"
+    assert h["Referer"] == "https://site.com/"
+
+
+def _dl():
+    return Downloader(on_progress=lambda d: None, on_done=lambda ok, e: None)
+
+
+def _cfg(**kw):
+    return DownloadConfig(
+        url=kw.pop("url", "https://s.com/v"), out_dir=".",
+        format_str=kw.pop("format_str", "FMT"),
+        is_audio_only=kw.pop("is_audio_only", False),
+        container="mp4", ffmpeg_dir=None, **kw)
+
+
+def test_attempt_plan_escalates_for_video(monkeypatch):
+    monkeypatch.setattr(main, "detect_cookie_browser", lambda: None)
+    labels = [lbl for lbl, _ in _dl()._attempt_plan(_cfg())]
+    assert labels[0] == "기본 다운로드"
+    assert any("헤더" in l for l in labels)
+    assert any("호환 포맷" in l for l in labels)
+    assert any("최저 화질" in l for l in labels)
+
+
+def test_attempt_plan_audio_skips_format_downgrade(monkeypatch):
+    monkeypatch.setattr(main, "detect_cookie_browser", lambda: None)
+    labels = [lbl for lbl, _ in _dl()._attempt_plan(
+        _cfg(is_audio_only=True, format_str="bestaudio/best"))]
+    assert not any("화질" in l for l in labels)        # 음성은 포맷 낮춤 없음
+
+
+def test_attempt_plan_adds_cookie_step_when_browser_present(monkeypatch):
+    monkeypatch.setattr(main, "detect_cookie_browser", lambda: "chrome")
+    plan = _dl()._attempt_plan(_cfg())
+    assert any("쿠키" in lbl for lbl, _ in plan)
+    cookie_extra = next(extra for lbl, extra in plan if "쿠키" in lbl)
+    assert cookie_extra["cookiesfrombrowser"] == ("chrome", None, None, None)
+
+
+def test_base_opts_has_socket_timeout_and_hooks():
+    opts = _dl()._base_opts(_cfg())
+    assert opts["socket_timeout"] == main.SOCKET_TIMEOUT
+    assert opts["retries"] == 10 and opts["fragment_retries"] == 10
+    assert "format" not in opts                         # 포맷은 시도별로 덮음
+
+
+def test_scan_manifest_prefers_hls(monkeypatch):
+    html = (b'<html>x = "https:\\/\\/c.com\\/v\\/index.mpd"; '
+            b'y = "https://c.com/v/master.m3u8?a=1";</html>')
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1): return html
+
+    monkeypatch.setattr(main.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp())
+    got = Downloader._scan_manifest("https://c.com/watch")
+    assert got == "https://c.com/v/master.m3u8?a=1"     # .m3u8 우선 + \/ 복원

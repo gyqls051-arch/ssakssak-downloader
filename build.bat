@@ -38,6 +38,8 @@ REM  --collect-all webview    : pywebview + bottle 등
 REM  --collect-all pythonnet / clr_loader : WebView2(.NET) 백엔드 로더
 REM  --collect-all curl_cffi  : 컴파일된 libcurl DLL + cacert
 REM  --collect-submodules mutagen : yt-dlp 가 동적 import
+REM  --exclude-module playwright  : 배포 exe 에서 Playwright(2단계 최후폴백) 완전 제외.
+REM     (개인 소스 실행에서만 동작. 빌드 PC 에 playwright 가 깔려 있어도 배포본엔 미포함)
 %PY% -m PyInstaller ^
     --noconfirm ^
     --onefile ^
@@ -50,6 +52,7 @@ REM  --collect-submodules mutagen : yt-dlp 가 동적 import
     --hidden-import clr ^
     --collect-all curl_cffi ^
     --collect-submodules mutagen ^
+    --exclude-module playwright ^
     %FFMPEG_BUNDLE% ^
     main.py || goto :error
 

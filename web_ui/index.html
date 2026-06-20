@@ -430,6 +430,12 @@ function dlMerging(id){
   el.querySelector('.bar>div').style.width = '99%';
   el.querySelector('.it-meta').textContent = '🔄 합치는 중…';
 }
+/* 폴백 재시도/2단계 진입 시 상태 문구 (Python → JS). 진행바는 건드리지 않음 */
+function dlStatus(id, text){
+  const el = items[id]; if(!el) return;
+  const meta = el.querySelector('.it-meta');
+  if(meta){ meta.className = 'it-meta'; meta.textContent = '⟳ ' + text; }
+}
 function dlDone(id, info){
   const el = items[id]; if(!el) return;
   el.querySelector('.bar')?.remove();

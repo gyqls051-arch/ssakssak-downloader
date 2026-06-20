@@ -27,3 +27,13 @@ curl_cffi>=0.7
 # mutagen: m4a/opus 등 일부 컨테이너의 썸네일·메타데이터 임베딩 보조
 #   (순수 파이썬, 가벼움). mp4/mp3 는 ffmpeg 로도 처리되지만 안정성 ↑.
 mutagen>=1.47
+
+# -------------------------------------------------------------
+# [개인·소스 전용] Playwright — 2단계 최후폴백(헤드리스 브라우저로 스트림 가로채기)
+# -------------------------------------------------------------
+# 소스로 직접 실행할 때만 자동으로 켜진다(ENABLE_PLAYWRIGHT = not frozen).
+# 배포 exe 에는 build.bat 의 --exclude-module 로 아예 빠지며, 사용자 토글도 없다.
+# 개인이 쓰려면 아래를 설치 (설치 안 해도 프로그램은 정상 동작 — 이 폴백만 건너뜀):
+#    pip install playwright
+#    playwright install chromium
+# playwright>=1.44
