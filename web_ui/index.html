@@ -273,6 +273,7 @@
         </div>
         <div class="mfoot">
           <span class="savepath" id="aSave"></span>
+          <button class="btn-sec" style="padding:0 12px" onclick="changeSaveFromPopup()">경로 변경</button>
           <button class="btn-sec" onclick="closeAnalyze()">취소</button>
           <button class="btn-primary" style="height:36px;padding:0 20px;font-size:13px" onclick="startDownload()">다운로드</button>
         </div>
@@ -374,6 +375,7 @@ async function acceptTos(){
 function openSettings(){ $('sSave').value = INIT.save_dir; $('ovSettings').classList.add('on'); }
 function closeSettings(){ $('ovSettings').classList.remove('on'); }
 async function pickFolder(){ const d = await api().pick_folder(); if(d){ INIT.save_dir=d; $('sSave').value=d; } }
+async function changeSaveFromPopup(){ const d = await api().pick_folder(); if(d){ INIT.save_dir=d; $('sSave').value=d; $('aSave').textContent='저장: '+d; } }
 function openFolder(){ api().open_folder(); }
 function openPromo(){ api().open_url(INIT.promo_url); }
 function setHint(t, err){ const h=$('urlHint'); h.textContent=t; h.className='hint'+(err?' err':''); }

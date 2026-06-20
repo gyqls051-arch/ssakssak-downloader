@@ -1109,18 +1109,9 @@ class Api:
         self._ffmpeg_dir = find_ffmpeg()
         self._auto_cookie_browser: str | None = None
         self._last_clip = ""
-        self._cur_id: str | None = None
-        self._cur_filepath: str | None = None
-        self._files: dict[str, str] = {}
-        self._queue: list[tuple[str, str, str, str]] = []  # 대기열 (job_id,url,화질,포맷)
-        self._is_downloading = False
+        self._files: dict[str, str] = {}              # job_id → 최종 파일 경로
+        self._active: dict[str, Downloader] = {}      # 동시 진행 중 (job_id → Downloader)
         self._maxed = False
-        self._downloader = Downloader(
-            on_progress=self._on_progress,
-            on_done=self._on_done,
-            on_item_done=self._on_item_done,
-            on_status=self._on_status,
-        )
 
     def set_window(self, w) -> None:
         self._window = w
@@ -1215,68 +1206,50 @@ class Api:
         is_audio = "음성만" in quality
         if self._ffmpeg_dir is None and not is_audio:
             return {"ok": False, "error": "ffmpeg 준비 중입니다. 잠시 후 다시 시도하세요"}
-        # 마지막 선택을 기본값으로 기억(다음 분석 팝업의 기본 화질/포맷)
-        self._cfg["quality"] = quality
-        self._cfg["format"] = fmt
-        self._settings.save(self._cfg)
-        # 이미 받는 중이면 대기열에 넣고, 현재 다운로드가 끝나면 자동 시작
-        if self._is_downloading:
-            self._queue.append((job_id, url, quality, fmt))
-            return {"ok": True, "queued": True}
-        self._begin_download(job_id, url, quality, fmt)
-        return {"ok": True}
-
-    def _begin_download(self, job_id: str, url: str, quality: str, fmt: str) -> None:
         save_dir = Path(self._cfg.get("save_dir", self._default_dir()))
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            self._js(f"dlError('{job_id}',{json.dumps('저장 폴더 생성 실패: ' + str(e))})")
-            self._advance_queue()
-            return
-        is_audio = "음성만" in quality
+            return {"ok": False, "error": f"저장 폴더를 만들 수 없습니다: {e}"}
+        # 마지막 선택을 기본값으로 기억(다음 분석 팝업의 기본 화질/포맷)
+        self._cfg["quality"] = quality
+        self._cfg["format"] = fmt
+        self._settings.save(self._cfg)
+
         height = dict(QUALITY_TABLE).get(quality)
         container = dict(FORMAT_TABLE).get(fmt, "mp4")
         fmt_str = "bestaudio/best" if is_audio else build_format_selector(height, container)
-        self._cur_id = job_id
-        self._cur_filepath = None
-        self._is_downloading = True
         cfg = DownloadConfig(
             url=url, out_dir=str(save_dir), format_str=fmt_str,
             is_audio_only=is_audio, container=container, ffmpeg_dir=self._ffmpeg_dir,
             cookies_browser=self._auto_cookie_browser, embed_metadata=True,
-            # 소스 실행(개인)=True, 배포 exe=False. 사용자용 토글은 없음.
-            use_playwright=ENABLE_PLAYWRIGHT,
+            use_playwright=ENABLE_PLAYWRIGHT,   # 소스(개인)=True, 배포 exe=False
         )
+        # 동시 다운로드: 작업마다 독립 Downloader 를 만들고 콜백에 job_id 를 바인딩한다.
+        dl = Downloader(
+            on_progress=lambda d, j=job_id: self._on_progress(j, d),
+            on_done=lambda ok, e, j=job_id: self._on_done(j, ok, e),
+            on_item_done=lambda vid, fp=None, j=job_id: self._on_item_done(j, fp),
+            on_status=lambda t, j=job_id: self._on_status(j, t),
+        )
+        self._active[job_id] = dl
         self._js("setBusy(true)")
-        log.info("download start id=%s url=%s", job_id, url)
-        threading.Thread(target=self._downloader.run, args=(cfg,), daemon=True).start()
-
-    def _advance_queue(self) -> None:
-        """현재 다운로드가 끝나면 대기열의 다음 항목을 시작(없으면 유휴 상태로)."""
-        if self._queue:
-            nj = self._queue.pop(0)
-            self._begin_download(*nj)
-        else:
-            self._js("setBusy(false)")
+        log.info("download start id=%s url=%s (active=%d)", job_id, url, len(self._active))
+        threading.Thread(target=dl.run, args=(cfg,), daemon=True).start()
+        return {"ok": True}
 
     def cancel_download(self) -> None:
-        # 대기열을 비우고(대기 항목은 취소 표시) 현재 다운로드를 취소한다.
-        pending = self._queue
-        self._queue = []
-        for item in pending:
-            self._js(f"dlCancelled('{item[0]}')")
-        if self._is_downloading:
-            self._downloader.cancel()
-        else:
-            self._js("setBusy(false)")
+        # 진행 중인 모든 다운로드를 취소한다(전체 취소 버튼).
+        for dl in list(self._active.values()):
+            dl.cancel()
 
     def forget_item(self, job_id: str) -> None:
-        """목록에서 항목을 제거(X)할 때: 대기열이면 빼고, 진행 중이면 취소한다."""
-        self._queue = [q for q in self._queue if q[0] != job_id]
-        if self._is_downloading and self._cur_id == job_id:
-            self._downloader.cancel()
-        elif not self._is_downloading and not self._queue:
+        """목록에서 항목 제거(X): 진행 중이면 취소(끝나면 _on_done 이 정리)."""
+        dl = self._active.get(job_id)
+        if dl:
+            dl.cancel()
+        self._files.pop(job_id, None)
+        if not self._active:
             self._js("setBusy(false)")
 
     def pick_folder(self) -> str | None:
@@ -1361,9 +1334,7 @@ class Api:
 
     # ---------------- 다운로더 콜백 (다운로드 스레드 → JS) ----------------
 
-    def _on_progress(self, d: dict) -> None:
-        if self._cur_id is None:
-            return
+    def _on_progress(self, jid: str, d: dict) -> None:
         status = d.get("status")
         if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -1371,44 +1342,39 @@ class Api:
             speed = d.get("speed") or 0
             pct = (done / total * 100) if total else 0
             self._js(
-                f"dlProgress('{self._cur_id}',{{pct:{pct:.1f},"
+                f"dlProgress('{jid}',{{pct:{pct:.1f},"
                 f"done:{done / 1048576:.2f},total:{total / 1048576:.2f},"
                 f"speed:{(speed or 0) / 1048576:.2f}}})"
             )
         elif status == "finished":
-            self._js(f"dlMerging('{self._cur_id}')")
+            self._js(f"dlMerging('{jid}')")
 
-    def _on_status(self, text: str) -> None:
-        """폴백 재시도/2단계 진입 시 현재 항목에 진행 상태 문구를 보여준다."""
-        if self._cur_id is not None:
-            self._js(f"dlStatus('{self._cur_id}',{json.dumps(text)})")
+    def _on_status(self, jid: str, text: str) -> None:
+        """폴백 재시도/2단계 진입 시 해당 항목에 진행 상태 문구를 보여준다."""
+        self._js(f"dlStatus('{jid}',{json.dumps(text)})")
 
-    def _on_item_done(self, vid: str, filepath: str | None = None) -> None:
-        if self._cur_id is None:
-            return
+    def _on_item_done(self, jid: str, filepath: str | None = None) -> None:
         if filepath:
-            self._cur_filepath = filepath
-        self._files[self._cur_id] = self._cur_filepath or ""
+            self._files[jid] = filepath
+        fp = self._files.get(jid, "")
         size = ""
         try:
-            if self._cur_filepath:
-                size = f"{Path(self._cur_filepath).stat().st_size / 1048576:.1f} MB"
+            if fp:
+                size = f"{Path(fp).stat().st_size / 1048576:.1f} MB"
         except OSError:
             pass
-        fname = Path(self._cur_filepath).name if self._cur_filepath else ""
-        self._js(f"dlDone('{self._cur_id}',{json.dumps({'size': size, 'file': fname})})")
+        fname = Path(fp).name if fp else ""
+        self._js(f"dlDone('{jid}',{json.dumps({'size': size, 'file': fname})})")
 
-    def _on_done(self, ok: bool, err: str | None) -> None:
-        jid = self._cur_id
-        self._is_downloading = False
-        if jid is not None:
-            if not ok and err == DOWNLOAD_CANCELLED:
-                self._js(f"dlCancelled('{jid}')")
-            elif not ok:
-                msg = (err or "실패").splitlines()[-1][:120]
-                self._js(f"dlError('{jid}',{json.dumps(msg)})")
-        self._cur_id = None
-        self._advance_queue()
+    def _on_done(self, jid: str, ok: bool, err: str | None) -> None:
+        self._active.pop(jid, None)
+        if not ok and err == DOWNLOAD_CANCELLED:
+            self._js(f"dlCancelled('{jid}')")
+        elif not ok:
+            msg = (err or "실패").splitlines()[-1][:120]
+            self._js(f"dlError('{jid}',{json.dumps(msg)})")
+        if not self._active:
+            self._js("setBusy(false)")
 
     # ---------------- 백그라운드 (시작 후) ----------------
 
@@ -1459,8 +1425,6 @@ class Api:
     def _clip_loop(self) -> None:
         while True:
             time.sleep(1.2)
-            if self._is_downloading:
-                continue
             try:
                 t = read_clipboard_text().strip()
             except Exception:
