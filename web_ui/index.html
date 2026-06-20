@@ -319,7 +319,7 @@ let lastAnalyze = null;
 
 function $(id){ return document.getElementById(id); }
 
-window.addEventListener('pywebviewready', async () => {
+async function boot(){
   INIT = await api().get_init();
   $('appTitle').textContent = INIT.app_title;
   $('appVer').textContent = 'v' + INIT.version;
@@ -330,7 +330,14 @@ window.addEventListener('pywebviewready', async () => {
   fillSelect('aFormat', INIT.formats, INIT.format);
   $('sSave').value = INIT.save_dir;
   if (!INIT.tos_accepted) $('ovTos').classList.add('on');
-});
+  document.title = INIT.app_title || '싹싹김치 다운로드';
+}
+// 이벤트가 이미 지나갔어도(레이스) 동작하도록 양쪽 다 대비
+function bootWhenReady(){
+  if (window.pywebview && window.pywebview.api) { boot(); }
+  else { window.addEventListener('pywebviewready', boot); }
+}
+bootWhenReady();
 
 function setStatus(ok){
   $('stDot').className = 'dot' + (ok ? '' : ' bad');
@@ -406,7 +413,7 @@ function addItem(id, title, thumb){
   const el = document.createElement('div');
   el.className = 'item'; el.id = id;
   el.innerHTML =
-    '<div class="thumb">' + (thumb ? '<img src="'+thumb+'" onerror="this.style.display=\\'none\\'">' : '<span class="play">▶</span>') + '</div>' +
+    '<div class="thumb">' + (thumb ? '<img src="'+thumb+'" onerror="this.style.display=\'none\'">' : '<span class="play">▶</span>') + '</div>' +
     '<div class="it-mid"><div class="it-title">'+escapeHtml(title)+'</div>' +
     '<div class="bar"><div></div></div><div class="it-meta">대기 중…</div></div>' +
     '<div class="it-pct">0%</div>';
@@ -446,8 +453,8 @@ function dlDone(id, info){
   if(!el.querySelector('.it-acts')){
     const acts = document.createElement('div');
     acts.className = 'it-acts';
-    acts.innerHTML = '<button class="sbtn" onclick="api().open_item(\\''+id+'\\')">폴더 열기</button>'+
-                     '<button class="sbtn blue" onclick="api().play_item(\\''+id+'\\')">재생</button>';
+    acts.innerHTML = '<button class="sbtn" onclick="api().open_item(\''+id+'\')">폴더 열기</button>'+
+                     '<button class="sbtn blue" onclick="api().play_item(\''+id+'\')">재생</button>';
     el.appendChild(acts);
   }
 }

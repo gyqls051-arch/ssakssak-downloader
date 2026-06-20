@@ -1087,21 +1087,25 @@ class Api:
     """JS(window.pywebview.api)에서 호출하는 백엔드. 모든 사이드이펙트는 여기 격리."""
 
     def __init__(self) -> None:
-        self.window = None
-        self.settings = Settings()
-        self.cfg = self.settings.load()
-        self.analyzer = VideoAnalyzer()
-        self.installer = FfmpegInstaller()
-        self.updater = UpdateChecker()
-        self.ffmpeg_dir = find_ffmpeg()
+        # ⚠ pywebview 가 js_api 객체의 '언더스코어 아닌' 속성을 재귀적으로 탐색하다
+        #   커스텀 객체(window/서비스)로 파고들어 무한재귀/COM 오류를 내고 브리지가
+        #   안 붙는다. 그래서 메서드가 아닌 내부 상태는 전부 '_' 접두사로 둬서
+        #   pywebview 가 건너뛰게 한다. (JS 에 노출할 것은 메서드뿐.)
+        self._window = None
+        self._settings = Settings()
+        self._cfg = self._settings.load()
+        self._analyzer = VideoAnalyzer()
+        self._installer = FfmpegInstaller()
+        self._updater = UpdateChecker()
+        self._ffmpeg_dir = find_ffmpeg()
         self._auto_cookie_browser: str | None = None
         self._last_clip = ""
         self._cur_id: str | None = None
         self._cur_filepath: str | None = None
         self._files: dict[str, str] = {}
-        self.is_downloading = False
+        self._is_downloading = False
         self._maxed = False
-        self.downloader = Downloader(
+        self._downloader = Downloader(
             on_progress=self._on_progress,
             on_done=self._on_done,
             on_item_done=self._on_item_done,
@@ -1109,12 +1113,12 @@ class Api:
         )
 
     def set_window(self, w) -> None:
-        self.window = w
+        self._window = w
 
     # ---------------- 내부 헬퍼 ----------------
 
     def _js(self, code: str) -> None:
-        w = self.window
+        w = self._window
         if w is None:
             return
         try:
@@ -1127,8 +1131,8 @@ class Api:
         return str(Path.home() / "Downloads" / "싹싹김치 다운로드")
 
     def _save_short(self) -> str:
-        parts = [p for p in re.split(r"[\\/]", self.cfg.get("save_dir", self._default_dir())) if p]
-        full = self.cfg.get("save_dir", self._default_dir())
+        parts = [p for p in re.split(r"[\\/]", self._cfg.get("save_dir", self._default_dir())) if p]
+        full = self._cfg.get("save_dir", self._default_dir())
         return "…\\" + "\\".join(parts[-2:]) if len(parts) > 2 else full
 
     def _qualities_for(self, result: AnalysisResult) -> list[str]:
@@ -1139,7 +1143,7 @@ class Api:
 
     def _probe_auto(self, url: str) -> tuple[AnalysisResult, str | None]:
         try:
-            return self.analyzer.probe(url, None), None
+            return self._analyzer.probe(url, None), None
         except Exception as e:
             if not looks_like_login_error(str(e)):
                 raise
@@ -1147,19 +1151,20 @@ class Api:
             if not browser:
                 raise
             log.info("retrying analysis with %s cookies", browser)
-            return self.analyzer.probe(url, browser), browser
+            return self._analyzer.probe(url, browser), browser
 
     # ---------------- JS 호출용 API ----------------
 
     def get_init(self) -> dict:
+        log.info("bridge ready: get_init called")
         return {
             "app_title": APP_TITLE,
             "version": APP_VERSION,
-            "ffmpeg_ok": self.ffmpeg_dir is not None,
-            "tos_accepted": self.cfg.get("tos_accepted") == TOS_VERSION,
-            "save_dir": self.cfg.get("save_dir", self._default_dir()),
-            "quality": self.cfg.get("quality", "1080p (FHD)"),
-            "format": self.cfg.get("format", FORMAT_TABLE[0][0]),
+            "ffmpeg_ok": self._ffmpeg_dir is not None,
+            "tos_accepted": self._cfg.get("tos_accepted") == TOS_VERSION,
+            "save_dir": self._cfg.get("save_dir", self._default_dir()),
+            "quality": self._cfg.get("quality", "1080p (FHD)"),
+            "format": self._cfg.get("format", FORMAT_TABLE[0][0]),
             "qualities": [lbl for lbl, _ in QUALITY_TABLE],
             "formats": [lbl for lbl, _ in FORMAT_TABLE],
             "promo_url": PROMO_URL,
@@ -1167,8 +1172,8 @@ class Api:
         }
 
     def accept_tos(self) -> None:
-        self.cfg["tos_accepted"] = TOS_VERSION
-        self.settings.save(self.cfg)
+        self._cfg["tos_accepted"] = TOS_VERSION
+        self._settings.save(self._cfg)
 
     def read_clipboard(self) -> str:
         return read_clipboard_text()
@@ -1184,7 +1189,7 @@ class Api:
             log.info("analyze failed: %s", e)
             return {"ok": False, "error": (str(e).splitlines()[-1] if str(e) else "분석 실패")[:140]}
         qs = self._qualities_for(result)
-        default_q = self.cfg.get("quality", "1080p (FHD)")
+        default_q = self._cfg.get("quality", "1080p (FHD)")
         if default_q not in qs:
             default_q = "1080p (FHD)" if "1080p (FHD)" in qs else qs[0]
         return {
@@ -1194,55 +1199,55 @@ class Api:
         }
 
     def start_download(self, job_id: str, url: str, quality: str, fmt: str) -> dict:
-        if self.is_downloading:
+        if self._is_downloading:
             return {"ok": False, "error": "이미 다운로드가 진행 중입니다"}
-        save_dir = Path(self.cfg.get("save_dir", self._default_dir()))
+        save_dir = Path(self._cfg.get("save_dir", self._default_dir()))
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             return {"ok": False, "error": f"저장 폴더를 만들 수 없습니다: {e}"}
         is_audio = "음성만" in quality
-        if self.ffmpeg_dir is None and not is_audio:
+        if self._ffmpeg_dir is None and not is_audio:
             return {"ok": False, "error": "ffmpeg 준비 중입니다. 잠시 후 다시 시도하세요"}
         height = dict(QUALITY_TABLE).get(quality)
         container = dict(FORMAT_TABLE).get(fmt, "mp4")
         fmt_str = "bestaudio/best" if is_audio else build_format_selector(height, container)
-        self.cfg["quality"] = quality
-        self.cfg["format"] = fmt
-        self.settings.save(self.cfg)
+        self._cfg["quality"] = quality
+        self._cfg["format"] = fmt
+        self._settings.save(self._cfg)
 
         self._cur_id = job_id
         self._cur_filepath = None
-        self.is_downloading = True
+        self._is_downloading = True
         cfg = DownloadConfig(
             url=url, out_dir=str(save_dir), format_str=fmt_str,
-            is_audio_only=is_audio, container=container, ffmpeg_dir=self.ffmpeg_dir,
+            is_audio_only=is_audio, container=container, ffmpeg_dir=self._ffmpeg_dir,
             cookies_browser=self._auto_cookie_browser, embed_metadata=True,
             # 소스 실행(개인)=True, 배포 exe=False. 사용자용 토글은 없음.
             use_playwright=ENABLE_PLAYWRIGHT,
         )
         log.info("download start id=%s url=%s", job_id, url)
-        threading.Thread(target=self.downloader.run, args=(cfg,), daemon=True).start()
+        threading.Thread(target=self._downloader.run, args=(cfg,), daemon=True).start()
         return {"ok": True}
 
     def cancel_download(self) -> None:
-        if self.is_downloading:
-            self.downloader.cancel()
+        if self._is_downloading:
+            self._downloader.cancel()
 
     def pick_folder(self) -> str | None:
         try:
-            res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+            res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         except Exception:
             return None
         if not res:
             return None
         d = res[0] if isinstance(res, (list, tuple)) else res
-        self.cfg["save_dir"] = d
-        self.settings.save(self.cfg)
+        self._cfg["save_dir"] = d
+        self._settings.save(self._cfg)
         return d
 
     def open_folder(self) -> None:
-        d = self.cfg.get("save_dir", self._default_dir())
+        d = self._cfg.get("save_dir", self._default_dir())
         try:
             Path(d).mkdir(parents=True, exist_ok=True)
             os.startfile(d)  # noqa: S606
@@ -1274,16 +1279,16 @@ class Api:
 
     def win_minimize(self) -> None:
         try:
-            self.window.minimize()
+            self._window.minimize()
         except Exception:
             pass
 
     def win_maximize(self) -> None:
         try:
             if self._maxed:
-                self.window.restore()
+                self._window.restore()
             else:
-                self.window.maximize()
+                self._window.maximize()
             self._maxed = not self._maxed
         except Exception:
             pass
@@ -1294,7 +1299,7 @@ class Api:
 
     def exit_confirmed(self) -> None:
         try:
-            self.window.destroy()
+            self._window.destroy()
         except Exception:
             pass
 
@@ -1339,7 +1344,7 @@ class Api:
 
     def _on_done(self, ok: bool, err: str | None) -> None:
         jid = self._cur_id
-        self.is_downloading = False
+        self._is_downloading = False
         if jid is not None:
             if not ok and err == DOWNLOAD_CANCELLED:
                 self._js(f"dlCancelled('{jid}')")
@@ -1353,30 +1358,30 @@ class Api:
 
     def post_init(self) -> None:
         threading.Thread(target=self._kill_and_update, daemon=True).start()
-        if self.ffmpeg_dir is None:
+        if self._ffmpeg_dir is None:
             threading.Thread(target=self._install_ffmpeg, daemon=True).start()
         threading.Thread(target=self._clip_loop, daemon=True).start()
 
     def _kill_and_update(self) -> None:
-        decision = self.updater.fetch_decision()
+        decision = self._updater.fetch_decision()
         if decision is None:
             # 오프라인: 이전에 받은 정지가 있으면 유지
-            if self.cfg.get("killed"):
-                self._kill(self.cfg.get("killed_message") or "현재 사용이 중단되었습니다.")
+            if self._cfg.get("killed"):
+                self._kill(self._cfg.get("killed_message") or "현재 사용이 중단되었습니다.")
             return
         if decision.kind == "killswitch":
-            self.cfg["killed"] = True
-            self.cfg["killed_message"] = decision.message
-            self.settings.save(self.cfg)
+            self._cfg["killed"] = True
+            self._cfg["killed_message"] = decision.message
+            self._settings.save(self._cfg)
             self._kill(decision.message)
         elif decision.kind == "force_update":
             self._js(f"alert({json.dumps(decision.message + ' 업데이트가 필요합니다.')})")
             safe_open_url(decision.download_url)
         else:
-            if self.cfg.get("killed"):
-                self.cfg["killed"] = False
-                self.cfg["killed_message"] = ""
-                self.settings.save(self.cfg)
+            if self._cfg.get("killed"):
+                self._cfg["killed"] = False
+                self._cfg["killed_message"] = ""
+                self._settings.save(self._cfg)
 
     def _kill(self, msg: str) -> None:
         self._js(f"alert({json.dumps(msg)})")
@@ -1389,16 +1394,16 @@ class Api:
             elif p.stage == "extracting":
                 self._js(f"ffmpegStatus({json.dumps('설치 중…')},false)")
             elif p.stage == "done":
-                self.ffmpeg_dir = find_ffmpeg()
+                self._ffmpeg_dir = find_ffmpeg()
                 self._js("ffmpegStatus('준비 완료 · ffmpeg 설치됨',true)")
             elif p.stage == "error":
                 self._js(f"ffmpegStatus({json.dumps('파일 설치 실패: ' + p.message)},false)")
-        self.installer.install(cb)
+        self._installer.install(cb)
 
     def _clip_loop(self) -> None:
         while True:
             time.sleep(1.2)
-            if self.is_downloading:
+            if self._is_downloading:
                 continue
             try:
                 t = read_clipboard_text().strip()
