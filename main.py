@@ -22,7 +22,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1108,7 +1107,6 @@ class Api:
         self._updater = UpdateChecker()
         self._ffmpeg_dir = find_ffmpeg()
         self._auto_cookie_browser: str | None = None
-        self._last_clip = ""
         self._files: dict[str, str] = {}              # job_id → 최종 파일 경로
         self._active: dict[str, Downloader] = {}      # 동시 진행 중 (job_id → Downloader)
         self._maxed = False
@@ -1382,7 +1380,8 @@ class Api:
         threading.Thread(target=self._kill_and_update, daemon=True).start()
         if self._ffmpeg_dir is None:
             threading.Thread(target=self._install_ffmpeg, daemon=True).start()
-        threading.Thread(target=self._clip_loop, daemon=True).start()
+        # 클립보드 자동 감지는 두지 않는다 — 사용자가 링크 칸에 '붙여넣을 때만'
+        # 팝업이 뜨게 한다(복사만 해도 자동으로 뜨는 동작 제거).
 
     def _kill_and_update(self) -> None:
         decision = self._updater.fetch_decision()
@@ -1417,22 +1416,10 @@ class Api:
                 self._js(f"ffmpegStatus({json.dumps('설치 중…')},false)")
             elif p.stage == "done":
                 self._ffmpeg_dir = find_ffmpeg()
-                self._js("ffmpegStatus('준비 완료 · ffmpeg 설치됨',true)")
+                self._js("ffmpegStatus('준비 완료',true)")
             elif p.stage == "error":
                 self._js(f"ffmpegStatus({json.dumps('파일 설치 실패: ' + p.message)},false)")
         self._installer.install(cb)
-
-    def _clip_loop(self) -> None:
-        while True:
-            time.sleep(1.2)
-            try:
-                t = read_clipboard_text().strip()
-            except Exception:
-                continue
-            if (t and t != self._last_clip and URL_RE.match(t)
-                    and VIDEO_HOST_RE.search(t)):
-                self._last_clip = t
-                self._js(f"clipUrl({json.dumps(t)})")
 
 
 # ============================================================

@@ -509,9 +509,6 @@ function dlCancelled(id){
 function setBusy(on){ $('cancelBtn').style.display = on ? 'block' : 'none'; if(!on){ $('cancelBtn').textContent='■ 취소'; $('cancelBtn').style.color='#c42b1c'; } }
 function showExit(){ $('ovExit').classList.add('on'); }
 function closeExit(){ api().exit_confirmed(); }
-
-/* 클립보드 자동 감지: 새 링크를 잡으면 자동으로 팝업을 띄운다 (팝업 떠있으면 무시) */
-function clipUrl(u){ if($('ovAnalyze').classList.contains('on')) return; $('url').value=u; analyze(); }
 </script>
 </body>
 </html>
