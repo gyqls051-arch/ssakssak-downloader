@@ -148,6 +148,22 @@ COLOR_MUTED = "#5c5c5c"
 COLOR_LOG_BG = "#fafafa"
 COLOR_LOG_BORDER = "#e1e1e1"
 
+# 싹싹김치 디자인 팔레트 (화이트톤 + 블루 액센트). tkinter 라 그라데이션/둥근
+# 모서리는 단색·근사치로 표현한다.
+DC_BG        = "#eef0f3"   # 창 배경
+DC_CARD      = "#fcfcfd"   # 카드 배경
+DC_CARD_BD   = "#e7e8ec"   # 카드 테두리
+DC_INK       = "#1d2129"   # 본문 글자
+DC_MUTED     = "#8a919c"   # 보조 글자(라벨)
+DC_MUTED2    = "#9298a2"   # 보조 글자(힌트)
+DC_BLUE      = "#2950d8"   # 액센트(프라이머리)
+DC_BLUE_DK   = "#2342c4"
+DC_SUCCESS   = "#1a7f37"
+DC_STATUS_BG = "#edeef1"   # 상태바 배경
+DC_BANNER_BG = "#28324c"   # 광고 배너 배경(그라데이션 대신 단색)
+DC_BANNER_SUB = "#b9c0d2"  # 배너 보조 글자
+DC_BANNER_CTA = "#ff5a2e"  # 배너 CTA 오렌지
+
 
 def preferred_font_family() -> str:
     """Win11의 'Segoe UI Variable' 우선, 없으면 'Segoe UI'."""
@@ -1063,9 +1079,20 @@ class DownloaderApp:
         # 로그인 필요한 영상에서 분석이 자동으로 찾아낸 브라우저(다운로드에 재사용).
         self._auto_cookie_browser: str | None = None
         self.update_decision: UpdateDecision | None = None
-        self._info_visible = False
-        self._progress_visible = False
         self._ffmpeg_prompt_handled = False
+        self._analyze_dlg: tk.Toplevel | None = None
+        self._pending_url = ""
+        self._popup_photo = None
+        self._exit_promo_photo = None
+
+        # 입력/옵션 변수 (메인·분석팝업·설정팝업이 공유)
+        default_dir = str(Path.home() / "Downloads" / "싹싹김치 다운로드")
+        self.url_var = tk.StringVar()
+        self.url_var.trace_add("write", self._on_url_changed)
+        self.url_status_var = tk.StringVar(value="")
+        self.quality_var = tk.StringVar(value=self._cfg.get("quality", "1080p (FHD)"))
+        self.format_var = tk.StringVar(value=self._cfg.get("format", FORMAT_TABLE[0][0]))
+        self.save_dir_var = tk.StringVar(value=self._cfg.get("save_dir", default_dir))
 
         # 다운로드 히스토리: 최신순으로 쌓이는 4K Downloader 식 카드 리스트
         self.history_widgets: dict[str, HistoryItemFrame] = {}
@@ -1096,240 +1123,155 @@ class DownloaderApp:
     # ---------------- 빌드 ----------------
 
     def _build_ui(self) -> None:
-        self.container = ttk.Frame(self.root)
-        self.container.pack(fill="both", expand=True, padx=PAD_OUTER, pady=24)
+        fam = preferred_font_family()
+        self._url_hint = "링크를 복사하면 자동으로 채워지고, 분석 결과가 팝업으로 표시됩니다."
+        self.url_status_var.set(self._url_hint)
+        self.root.configure(bg=DC_BG)
+        self.container = tk.Frame(self.root, bg=DC_BG)
+        self.container.pack(fill="both", expand=True, padx=18, pady=14)
 
-        # 푸터/업데이트 알림 (아래쪽 고정)
-        self.footer = ttk.Frame(self.container)
-        self.footer.pack(side="bottom", fill="x", pady=(10, 0))
-        if self.ffmpeg_dir:
-            self.ffmpeg_lbl = ttk.Label(
-                self.footer, text="●  준비 완료", foreground=COLOR_SUCCESS,
-            )
-        else:
-            self.ffmpeg_lbl = ttk.Label(
-                self.footer,
-                text="●  추가 파일 다운로드 필요 — 클릭하여 진행",
-                foreground=COLOR_DANGER, cursor="hand2",
-            )
-            self.ffmpeg_lbl.bind(
-                "<Button-1>", lambda _e: self._prompt_install_ffmpeg(force=True),
-            )
-        self.ffmpeg_lbl.pack(side="left")
-        ttk.Label(self.footer, text=f"v{APP_VERSION}", style="Subtitle.TLabel").pack(side="right")
+        # 헤더: 타이틀 + 버전 + 설정(기어)
+        header = tk.Frame(self.container, bg=DC_BG)
+        header.pack(side="top", fill="x", pady=(0, 12))
+        tk.Label(header, text="↓  " + APP_TITLE, bg=DC_BG, fg=DC_INK,
+                 font=(fam, 16, "bold")).pack(side="left")
+        tk.Label(header, text="v" + APP_VERSION, bg=DC_BG, fg=DC_MUTED,
+                 font=(fam, 9)).pack(side="left", padx=(8, 0), pady=(7, 0))
+        gear = tk.Label(header, text="⚙  설정", bg=DC_BG, fg=DC_MUTED,
+                        font=(fam, 10), cursor="hand2")
+        gear.pack(side="right", pady=(5, 0))
+        gear.bind("<Button-1>", lambda _e: self._show_settings_popup())
 
-        self.update_label = ttk.Label(self.container, text="",
-                                      foreground=COLOR_ACCENT,
-                                      cursor="hand2", anchor="w", justify="left")
-        self.update_label.pack(side="bottom", fill="x", pady=(0, 6))
+        # 하단 고정(아래→위): 상태바 · 광고배너 · 업데이트알림
+        self._build_statusbar(fam)
+        self._build_banner(fam)
+        self.update_label = tk.Label(self.container, text="", bg=DC_BG, fg=DC_BLUE,
+                                     cursor="hand2", anchor="w", font=(fam, 9))
+        self.update_label.pack(side="bottom", fill="x", pady=(8, 4))
 
-        # 제휴 광고 배너 (외부 광고주처럼 표시) — 클릭 시 PROMO_URL 로 이동
-        self.promo_lbl = tk.Label(
-            self.container, text=PROMO_TEXT, fg=COLOR_ACCENT, bg="#eef4ff",
-            cursor="hand2", anchor="center", padx=10, pady=8,
-            font=(preferred_font_family(), 9),
-        )
-        self.promo_lbl.pack(side="bottom", fill="x", pady=(6, 0))
-        self.promo_lbl.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
-        # 원격 배너 이미지가 지정돼 있으면 받아서 텍스트 대신 표시(실패 시 텍스트 유지)
-        self._promo_photo = None
-        self._exit_promo_photo = None   # 종료 시 큰 배너 (미리 받아둠)
-        if PIL_AVAILABLE:
-            if PROMO_IMAGE_URL:
-                threading.Thread(target=self._fetch_promo_image, daemon=True).start()
-            if PROMO_EXIT_IMAGE_URL:
-                threading.Thread(target=self._fetch_exit_promo_image, daemon=True).start()
+        # 위: URL 카드 + 다운로드 목록(남는 공간 채움)
+        self._build_url_card(fam)
+        self._build_list_card(fam)
 
-        # 헤더
-        header = ttk.Frame(self.container)
-        header.pack(side="top", fill="x", pady=(0, 18))
-        ttk.Label(header, text=APP_TITLE, style="Title.TLabel").pack(side="left")
-        ttk.Label(header, text="유튜브·인스타·비메오·틱톡 등 영상을 원하는 화질로 저장",
-                  style="Subtitle.TLabel").pack(side="left", padx=(12, 0), pady=(8, 0))
+    @staticmethod
+    def _card(parent: tk.Misc) -> tk.Frame:
+        return tk.Frame(parent, bg=DC_CARD, highlightbackground=DC_CARD_BD,
+                        highlightcolor=DC_CARD_BD, highlightthickness=1)
 
-        self._build_url_card()
-        self._build_info_card()
-        self._build_progress_card()
+    def _build_url_card(self, fam: str) -> None:
+        card = self._card(self.container)
+        card.pack(side="top", fill="x", pady=(0, 11))
+        inner = tk.Frame(card, bg=DC_CARD)
+        inner.pack(fill="x", padx=14, pady=13)
 
-    def _build_url_card(self) -> None:
-        card = ttk.LabelFrame(self.container, text="  영상 링크  ")
-        card.pack(side="top", fill="x", pady=(0, 14))
-        self.url_card = card
+        tk.Label(inner, text="영상 링크", bg=DC_CARD, fg=DC_MUTED,
+                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 8))
+        row = tk.Frame(inner, bg=DC_CARD)
+        row.pack(fill="x")
+        self.url_entry = ttk.Entry(row, textvariable=self.url_var, font=(fam, 11))
+        self.url_entry.pack(side="left", fill="x", expand=True, ipady=4)
+        ttk.Button(row, text="붙여넣기 · 분석", style="Accent.TButton",
+                   command=self._paste_and_analyze).pack(side="left", padx=(7, 0))
+        tk.Label(inner, textvariable=self.url_status_var, bg=DC_CARD, fg=DC_MUTED2,
+                 font=(fam, 9), anchor="w", justify="left", wraplength=660
+                 ).pack(anchor="w", pady=(9, 0))
 
-        inner = ttk.Frame(card)
-        inner.pack(fill="x", padx=PAD_CARD, pady=16)
-        inner.columnconfigure(0, weight=1)
+    def _build_list_card(self, fam: str) -> None:
+        card = self._card(self.container)
+        card.pack(side="top", fill="both", expand=True)
+        head = tk.Frame(card, bg=DC_CARD)
+        head.pack(fill="x", padx=14, pady=(12, 9))
+        tk.Label(head, text="다운로드 목록", bg=DC_CARD, fg=DC_MUTED,
+                 font=(fam, 9, "bold")).pack(side="left")
+        self.count_badge = tk.Label(head, text="0개", bg="#edeef1", fg="#6a7079",
+                                     font=(fam, 8, "bold"), padx=7, pady=1)
+        self.count_badge.pack(side="left", padx=(8, 0))
+        # 취소: 다운로드 중에만 우측에 표시 (pack/pack_forget 로 토글)
+        self.cancel_btn = tk.Label(head, text="■ 취소", bg=DC_CARD, fg=COLOR_DANGER,
+                                   font=(fam, 9, "bold"), cursor="hand2")
+        self.cancel_btn.bind("<Button-1>", lambda _e: self._cancel_download())
 
-        self.url_var = tk.StringVar()
-        self.url_var.trace_add("write", self._on_url_changed)
-        self.url_entry = ttk.Entry(inner, textvariable=self.url_var, style="Hero.TEntry")
-        self.url_entry.grid(row=0, column=0, sticky="ew")
-
-        btn_row = ttk.Frame(inner)
-        btn_row.grid(row=0, column=1, padx=(10, 0))
-        ttk.Button(btn_row, text="붙여넣기", command=self._paste).pack(side="left", padx=(0, 6))
-        ttk.Button(btn_row, text="지우기",
-                   command=lambda: self.url_var.set("")).pack(side="left")
-
-        self.url_status_var = tk.StringVar(value="")
-        ttk.Label(inner, textvariable=self.url_status_var,
-                  style="CardMuted.TLabel",
-                  anchor="w", wraplength=640, justify="left"
-                  ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
-
-        # 클립보드 자동 감지 + 로그인 쿠키는 사용자에게 노출하지 않고 자동 처리.
-        ttk.Label(
-            inner,
-            text="💡 영상 링크를 복사하면 자동으로 채워집니다. 로그인이 필요한 영상도 자동으로 처리해요.",
-            style="Hint.TLabel", anchor="w", wraplength=640, justify="left",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-    def _build_info_card(self) -> None:
-        card = ttk.LabelFrame(self.container, text="  영상 정보  ")
-        self.info_card = card
-
-        # 미리보기: 썸네일(좌) + 제목/메타(우) — 4K Downloader 식 사전 노출
-        preview = ttk.Frame(card)
-        preview.pack(fill="x", padx=PAD_CARD, pady=(16, 0))
-        preview.columnconfigure(1, weight=1)
-
-        self.info_thumb = tk.Canvas(preview, width=160, height=90,
-                                    bg="#dcdcdc", highlightthickness=0)
-        self.info_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 14), sticky="n")
-        self._info_photo = None   # PhotoImage 참조 유지 (GC 방지)
-
-        self.info_title_lbl = ttk.Label(
-            preview, text="", style="CardTitle.TLabel",
-            wraplength=440, justify="left", anchor="w",
-        )
-        self.info_title_lbl.grid(row=0, column=1, sticky="ew", pady=(2, 4))
-
-        self.info_meta_lbl = ttk.Label(
-            preview, text="", style="CardMuted.TLabel",
-            wraplength=440, justify="left", anchor="w",
-        )
-        self.info_meta_lbl.grid(row=1, column=1, sticky="nw")
-
-        inner = ttk.Frame(card)
-        inner.pack(fill="x", padx=PAD_CARD, pady=16)
-        inner.columnconfigure(1, weight=1)
-        inner.columnconfigure(3, weight=1)
-
-        # 옵션
-        ttk.Label(inner, text="화질").grid(row=2, column=0, sticky="w", pady=6)
-        # 기본 화질: 프리미어 호환성 우선 → 1080p (FHD)
-        self.quality_var = tk.StringVar(
-            value=self._cfg.get("quality", "1080p (FHD)"))
-        self.quality_combo = ttk.Combobox(
-            inner, textvariable=self.quality_var,
-            values=[label for label, _ in QUALITY_TABLE],
-            state="readonly", width=18,
-        )
-        self.quality_combo.grid(row=2, column=1, sticky="ew", padx=(12, 24), pady=6)
-
-        ttk.Label(inner, text="포맷").grid(row=2, column=2, sticky="w", pady=6)
-        self.format_var = tk.StringVar(
-            value=self._cfg.get("format", FORMAT_TABLE[0][0]))
-        ttk.Combobox(
-            inner, textvariable=self.format_var,
-            values=[label for label, _ in FORMAT_TABLE],
-            state="readonly", width=22,
-        ).grid(row=2, column=3, sticky="ew", padx=(12, 0), pady=6)
-
-        ttk.Label(inner, text="저장 위치").grid(row=3, column=0, sticky="w", pady=(12, 6))
-        default_dir = str(Path.home() / "Downloads" / "싹싹김치 다운로드")
-        self.save_dir_var = tk.StringVar(value=self._cfg.get("save_dir", default_dir))
-
-        save_row = ttk.Frame(inner)
-        save_row.grid(row=3, column=1, columnspan=3, sticky="ew", padx=(12, 0), pady=(12, 6))
-        save_row.columnconfigure(0, weight=1)
-        ttk.Entry(save_row, textvariable=self.save_dir_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(save_row, text="찾기", command=self._pick_folder).grid(row=0, column=1, padx=(8, 0))
-        ttk.Button(save_row, text="열기", command=self._open_folder).grid(row=0, column=2, padx=(6, 0))
-
-        # 메타데이터·썸네일 삽입은 항상 켜는 좋은 기본값이라 옵션 노출 없음.
-        self.download_btn = ttk.Button(
-            inner, text="다운로드 시작",
-            style="Accent.TButton",
-            command=self._start_download,
-        )
-        self.download_btn.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(20, 0), ipady=6)
-
-        # 취소 버튼: 평소 숨김, 다운로드 중에만 표시
-        self.cancel_btn = ttk.Button(inner, text="취소", command=self._cancel_download)
-        self.cancel_btn.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        self.cancel_btn.grid_remove()
-
-    def _build_progress_card(self) -> None:
-        """다운로드 목록 카드 — 4K Downloader 식 항목 스택, 최신이 위."""
-        card = ttk.LabelFrame(self.container, text="  다운로드 목록  ")
-        self.progress_card = card
-
-        inner = ttk.Frame(card)
-        inner.pack(fill="both", expand=True, padx=PAD_CARD, pady=14)
-        inner.columnconfigure(0, weight=1)
-        inner.rowconfigure(0, weight=1)
-
-        # 스크롤 가능 영역: Canvas + 내부 Frame (tkinter 표준 패턴)
-        # height 로 최소 높이를 확보해 다른 카드가 커져도 목록이 찌부되지 않게 한다.
-        self.history_canvas = tk.Canvas(
-            inner, highlightthickness=0, bg=COLOR_LOG_BG, height=200,
-        )
+        body = tk.Frame(card, bg=COLOR_LOG_BG)
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.history_canvas = tk.Canvas(body, highlightthickness=0, bg=COLOR_LOG_BG,
+                                        height=210)
         self.history_canvas.grid(row=0, column=0, sticky="nsew")
-
-        vscroll = ttk.Scrollbar(inner, orient="vertical",
+        vscroll = ttk.Scrollbar(body, orient="vertical",
                                 command=self.history_canvas.yview)
         vscroll.grid(row=0, column=1, sticky="ns")
         self.history_canvas.configure(yscrollcommand=vscroll.set)
-
         self.history_inner = tk.Frame(self.history_canvas, bg=COLOR_LOG_BG)
         self.history_window = self.history_canvas.create_window(
-            (0, 0), window=self.history_inner, anchor="nw",
-        )
+            (0, 0), window=self.history_inner, anchor="nw")
+        self.history_inner.bind(
+            "<Configure>",
+            lambda _e: self.history_canvas.configure(
+                scrollregion=self.history_canvas.bbox("all")))
+        self.history_canvas.bind(
+            "<Configure>",
+            lambda e: self.history_canvas.itemconfigure(self.history_window, width=e.width))
 
-        def _on_inner_configure(_e: object) -> None:
-            self.history_canvas.configure(scrollregion=self.history_canvas.bbox("all"))
-
-        def _on_canvas_configure(e: tk.Event) -> None:
-            self.history_canvas.itemconfigure(self.history_window, width=e.width)
-
-        self.history_inner.bind("<Configure>", _on_inner_configure)
-        self.history_canvas.bind("<Configure>", _on_canvas_configure)
-
-        # 마우스휠 스크롤
         def _on_wheel(e: tk.Event) -> None:
             self.history_canvas.yview_scroll(int(-e.delta / 120), "units")
         self.history_canvas.bind("<MouseWheel>", _on_wheel)
         self.history_inner.bind("<MouseWheel>", _on_wheel)
 
-        # 빈 상태 안내
         self.history_empty_lbl = tk.Label(
-            self.history_inner,
-            text="다운로드를 시작하면 여기에 영상이 쌓입니다.",
-            fg=COLOR_MUTED, bg=COLOR_LOG_BG,
-            font=(preferred_font_family(), 10),
-        )
-        self.history_empty_lbl.pack(pady=32)
+            self.history_inner, text="링크를 붙여넣어 다운로드를 시작하세요",
+            fg=DC_MUTED2, bg=COLOR_LOG_BG, font=(fam, 10))
+        self.history_empty_lbl.pack(pady=40)
 
-    # ---------------- 카드 표시 제어 ----------------
+    def _build_banner(self, fam: str) -> None:
+        """목업 광고 배너 (외부 광고주처럼). 클릭 시 PROMO_URL."""
+        b = tk.Frame(self.container, bg=DC_BANNER_BG, cursor="hand2")
+        b.pack(side="bottom", fill="x", pady=(8, 0))
 
-    def _relayout(self) -> None:
-        self.info_card.pack_forget()
-        self.progress_card.pack_forget()
-        if self._info_visible:
-            self.info_card.pack(side="top", fill="x", pady=(0, 14), after=self.url_card)
-        if self._progress_visible:
-            anchor = self.info_card if self._info_visible else self.url_card
-            self.progress_card.pack(side="top", fill="both", expand=True,
-                                    pady=(0, 14), after=anchor)
+        def go(_e: object = None) -> None:
+            safe_open_url(PROMO_URL)
 
-    def _show_info(self, visible: bool) -> None:
-        self._info_visible = visible
-        self._relayout()
+        parts = [b]
+        logo = tk.Label(b, text="O", bg=DC_BANNER_CTA, fg="#ffffff",
+                        font=(fam, 14, "bold"), width=3)
+        logo.pack(side="left", padx=(14, 12), pady=11)
+        parts.append(logo)
+        mid = tk.Frame(b, bg=DC_BANNER_BG)
+        mid.pack(side="left", fill="x", expand=True)
+        parts.append(mid)
+        l1 = tk.Label(mid, text="OFFCUT STUDIO    ·    제휴", bg=DC_BANNER_BG,
+                      fg="#ffffff", font=(fam, 10, "bold"), anchor="w")
+        l1.pack(anchor="w")
+        parts.append(l1)
+        l2 = tk.Label(mid, text="촬영부터 편집·납품까지, 영상 제작의 모든 것을 한 곳에서",
+                      bg=DC_BANNER_BG, fg=DC_BANNER_SUB, font=(fam, 9), anchor="w")
+        l2.pack(anchor="w")
+        parts.append(l2)
+        cta = tk.Label(b, text="무료로 시작 →", bg=DC_BANNER_CTA, fg="#ffffff",
+                       font=(fam, 9, "bold"), padx=14, pady=6)
+        cta.pack(side="right", padx=14)
+        parts.append(cta)
+        for w in parts:
+            w.bind("<Button-1>", go)
 
-    def _show_progress(self, visible: bool) -> None:
-        self._progress_visible = visible
-        self._relayout()
+    def _build_statusbar(self, fam: str) -> None:
+        bar = tk.Frame(self.container, bg=DC_STATUS_BG)
+        bar.pack(side="bottom", fill="x", pady=(8, 0))
+        if self.ffmpeg_dir:
+            self.ffmpeg_lbl = tk.Label(bar, text="● 준비 완료 · ffmpeg 설치됨",
+                                       bg=DC_STATUS_BG, fg=DC_SUCCESS, font=(fam, 9))
+        else:
+            self.ffmpeg_lbl = tk.Label(bar, text="● 추가 파일 필요 — 클릭하여 설치",
+                                       bg=DC_STATUS_BG, fg=COLOR_DANGER, font=(fam, 9),
+                                       cursor="hand2")
+            self.ffmpeg_lbl.bind("<Button-1>",
+                                 lambda _e: self._prompt_install_ffmpeg(force=True))
+        self.ffmpeg_lbl.pack(side="left", padx=12, pady=5)
+        tk.Label(bar, text="개인적 저장 용도 · 저작권 준수 책임은 사용자",
+                 bg=DC_STATUS_BG, fg=DC_MUTED, font=(fam, 8)).pack(side="right", padx=12)
+
+    def _update_count(self) -> None:
+        self.count_badge.configure(text=f"{len(self.history_widgets)}개")
 
     # ---------------- 헬퍼 ----------------
 
@@ -1363,13 +1305,11 @@ class DownloaderApp:
     def _maybe_analyze(self) -> None:
         url = self.url_var.get().strip()
         if not url:
-            self.url_status_var.set("")
-            self._show_info(False)
+            self.url_status_var.set(self._url_hint)
             self.last_analyzed_url = ""
             return
         if not URL_RE.match(url):
             self.url_status_var.set("⚠ 올바른 링크(http/https) 형식이 아닙니다.")
-            self._show_info(False)
             return
         if url == self.last_analyzed_url or self.is_analyzing:
             return
@@ -1409,75 +1349,185 @@ class DownloaderApp:
         # URL이 다시 바뀐 뒤 늦게 도착한 결과는 버린다.
         if url != self.last_analyzed_url:
             return
-        self.url_status_var.set("")
-        self.info_title_lbl.configure(text=result.title)
-        self.info_meta_lbl.configure(text=result.meta)
-
-        # 썸네일 미리보기: 일단 플레이스홀더 → 있으면 백그라운드로 받아 교체
-        self._set_info_thumb_placeholder()
-        if result.thumbnail and PIL_AVAILABLE:
-            threading.Thread(target=self._fetch_info_thumbnail,
-                             args=(url, result.thumbnail), daemon=True).start()
-
+        self.url_status_var.set(self._url_hint)
+        # 현재 영상에서 가능한 화질 목록 계산
         if result.heights:
             max_h = max(result.heights)
             labels = [label for label, h in QUALITY_TABLE
                       if h is None or h == -1 or h <= max_h]
-            self.quality_combo.configure(values=labels)
             if self.quality_var.get() not in labels:
-                # 1080p 가능하면 우선, 아니면 최고화질
                 self.quality_var.set(
-                    "1080p (FHD)" if "1080p (FHD)" in labels else "최고화질 (자동)"
-                )
+                    "1080p (FHD)" if "1080p (FHD)" in labels else "최고화질 (자동)")
         else:
-            self.quality_combo.configure(values=[label for label, _ in QUALITY_TABLE])
-
-        self._show_info(True)
+            labels = [label for label, _ in QUALITY_TABLE]
+        self._pending_url = url
+        self._show_analyze_popup(result, labels)
 
     def _apply_analysis_error(self, url: str, err: str) -> None:
         if url != self.last_analyzed_url:
             return
         short = err.splitlines()[-1][:120] if err else "알 수 없는 오류"
         self.url_status_var.set(f"⚠ 영상 정보를 가져오지 못했습니다: {short}")
-        self._show_info(False)
 
-    # ---------------- 썸네일 미리보기 ----------------
+    # ---------------- 영상정보 팝업 (4K식) ----------------
 
-    def _set_info_thumb_placeholder(self) -> None:
-        self._info_photo = None
-        self.info_thumb.delete("all")
-        self.info_thumb.create_text(
-            80, 45, text="미리보기", fill="#888888",
-            font=(preferred_font_family(), 9),
-        )
-
-    def _fetch_info_thumbnail(self, url: str, thumb_url: str) -> None:
-        # 네트워크 + 디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임한다
-        # (Tkinter 객체는 메인 스레드에서만 생성 가능 — 안 그러면 frozen 에서 실패).
+    def _paste_and_analyze(self) -> None:
+        """붙여넣기 + 즉시 분석 (같은 URL 이어도 강제 재분석)."""
         try:
-            req = urllib.request.Request(
-                thumb_url, headers={"User-Agent": HTTP_UA})
+            txt = self.root.clipboard_get().strip()
+            if txt:
+                self.url_var.set(txt)
+        except tk.TclError:
+            pass
+        self.last_analyzed_url = ""
+        if self.analyze_after_id is not None:
+            self.root.after_cancel(self.analyze_after_id)
+            self.analyze_after_id = None
+        self._maybe_analyze()
+
+    def _save_dir_short(self) -> str:
+        parts = [p for p in re.split(r"[\\/]", self.save_dir_var.get()) if p]
+        return "…\\" + "\\".join(parts[-2:]) if len(parts) > 2 else self.save_dir_var.get()
+
+    def _center_popup(self, dlg: tk.Toplevel) -> None:
+        dlg.update_idletasks()
+        try:
+            px, py = self.root.winfo_rootx(), self.root.winfo_rooty()
+            pw, ph = self.root.winfo_width(), self.root.winfo_height()
+            w, h = dlg.winfo_width(), dlg.winfo_height()
+            dlg.geometry(f"+{px + max(0, (pw - w) // 2)}+{py + max(0, (ph - h) // 2)}")
+        except tk.TclError:
+            pass
+
+    def _show_analyze_popup(self, result: AnalysisResult, labels: list[str]) -> None:
+        if self._analyze_dlg is not None and self._analyze_dlg.winfo_exists():
+            self._analyze_dlg.destroy()
+        fam = preferred_font_family()
+        dlg = tk.Toplevel(self.root, bg="#ffffff")
+        self._analyze_dlg = dlg
+        dlg.title("영상 정보")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        head = tk.Frame(dlg, bg="#ffffff")
+        head.pack(fill="x", padx=16, pady=(14, 0))
+        tk.Label(head, text="영상 정보", bg="#ffffff", fg=DC_INK,
+                 font=(fam, 12, "bold")).pack(side="left")
+        x = tk.Label(head, text="✕", bg="#ffffff", fg="#7c828d", font=(fam, 12),
+                     cursor="hand2")
+        x.pack(side="right")
+        x.bind("<Button-1>", lambda _e: dlg.destroy())
+
+        body = tk.Frame(dlg, bg="#ffffff")
+        body.pack(fill="both", expand=True, padx=16, pady=14)
+        top = tk.Frame(body, bg="#ffffff")
+        top.pack(fill="x")
+        top.columnconfigure(1, weight=1)
+        self.popup_thumb = tk.Canvas(top, width=152, height=85, bg="#dde3ec",
+                                     highlightthickness=0)
+        self.popup_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 13), sticky="n")
+        self.popup_thumb.create_text(76, 42, text="▶", fill="#5b6472", font=(fam, 16))
+        self._popup_photo = None
+        tk.Label(top, text=result.title, bg="#ffffff", fg=DC_INK,
+                 font=(fam, 12, "bold"), wraplength=270, justify="left",
+                 anchor="w").grid(row=0, column=1, sticky="w")
+        tk.Label(top, text=result.meta, bg="#ffffff", fg=DC_MUTED, font=(fam, 9),
+                 wraplength=270, justify="left", anchor="w").grid(
+                 row=1, column=1, sticky="nw", pady=(6, 0))
+
+        opt = tk.Frame(body, bg="#ffffff")
+        opt.pack(fill="x", pady=(15, 0))
+        opt.columnconfigure(0, weight=1)
+        opt.columnconfigure(1, weight=1)
+        qf = tk.Frame(opt, bg="#ffffff")
+        qf.grid(row=0, column=0, sticky="ew", padx=(0, 7))
+        tk.Label(qf, text="화질", bg="#ffffff", fg=DC_MUTED,
+                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 5))
+        ttk.Combobox(qf, textvariable=self.quality_var, values=labels,
+                     state="readonly").pack(fill="x")
+        ff = tk.Frame(opt, bg="#ffffff")
+        ff.grid(row=0, column=1, sticky="ew", padx=(7, 0))
+        tk.Label(ff, text="포맷", bg="#ffffff", fg=DC_MUTED,
+                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 5))
+        ttk.Combobox(ff, textvariable=self.format_var,
+                     values=[lbl for lbl, _ in FORMAT_TABLE],
+                     state="readonly").pack(fill="x")
+
+        foot = tk.Frame(body, bg="#ffffff")
+        foot.pack(fill="x", pady=(16, 0))
+        tk.Label(foot, text="저장: " + self._save_dir_short(), bg="#ffffff",
+                 fg=DC_MUTED2, font=(fam, 8)).pack(side="left")
+        ttk.Button(foot, text="다운로드 시작", style="Accent.TButton",
+                   command=self._start_download).pack(side="right")
+        ttk.Button(foot, text="취소", command=dlg.destroy).pack(side="right", padx=(0, 8))
+
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        if result.thumbnail and PIL_AVAILABLE:
+            threading.Thread(target=self._fetch_popup_thumb,
+                             args=(result.thumbnail,), daemon=True).start()
+        self._center_popup(dlg)
+
+    def _fetch_popup_thumb(self, thumb_url: str) -> None:
+        try:
+            req = urllib.request.Request(thumb_url, headers={"User-Agent": HTTP_UA})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = resp.read(3_000_000)
             img = Image.open(io.BytesIO(data)).convert("RGB")
-            img.thumbnail((160, 90))
+            img.thumbnail((152, 85))
         except Exception as e:
-            log.info("info thumbnail fetch failed: %s", e)
+            log.info("popup thumbnail fetch failed: %s", e)
             return
-        self.root.after(0, self._apply_info_thumbnail, url, img)
+        self.root.after(0, self._apply_popup_thumb, img)
 
-    def _apply_info_thumbnail(self, url: str, img: object) -> None:
-        # URL 이 바뀐 뒤 늦게 도착한 썸네일은 버린다.
-        if url != self.last_analyzed_url:
+    def _apply_popup_thumb(self, img: object) -> None:
+        dlg = self._analyze_dlg
+        if dlg is None or not dlg.winfo_exists():
             return
         try:
-            photo = ImageTk.PhotoImage(img)   # 메인 스레드에서 생성
+            photo = ImageTk.PhotoImage(img)   # 메인 스레드 생성
         except Exception as e:
-            log.info("info thumbnail render failed: %s", e)
+            log.info("popup thumbnail render failed: %s", e)
             return
-        self._info_photo = photo   # 참조 유지 (GC 방지)
-        self.info_thumb.delete("all")
-        self.info_thumb.create_image(80, 45, image=photo)
+        self._popup_photo = photo
+        self.popup_thumb.delete("all")
+        self.popup_thumb.create_image(76, 42, image=photo)
+
+    def _show_settings_popup(self) -> None:
+        fam = preferred_font_family()
+        dlg = tk.Toplevel(self.root, bg="#ffffff")
+        dlg.title("설정")
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        head = tk.Frame(dlg, bg="#ffffff")
+        head.pack(fill="x", padx=16, pady=(14, 0))
+        tk.Label(head, text="설정", bg="#ffffff", fg=DC_INK,
+                 font=(fam, 12, "bold")).pack(side="left")
+        x = tk.Label(head, text="✕", bg="#ffffff", fg="#7c828d", font=(fam, 12),
+                     cursor="hand2")
+        x.pack(side="right")
+        x.bind("<Button-1>", lambda _e: dlg.destroy())
+        body = tk.Frame(dlg, bg="#ffffff")
+        body.pack(fill="both", expand=True, padx=16, pady=14)
+        tk.Label(body, text="저장 위치", bg="#ffffff", fg=DC_MUTED,
+                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 6))
+        row = tk.Frame(body, bg="#ffffff")
+        row.pack(fill="x")
+        ttk.Entry(row, textvariable=self.save_dir_var, font=(fam, 9)).pack(
+            side="left", fill="x", expand=True, ipady=3)
+        ttk.Button(row, text="찾기", command=self._pick_folder).pack(side="left", padx=(6, 0))
+        ttk.Button(row, text="열기", command=self._open_folder).pack(side="left", padx=(6, 0))
+        ok = self.ffmpeg_dir is not None
+        tk.Label(body, text=("● ffmpeg 설치됨 · 준비 완료" if ok else "● 추가 파일 필요"),
+                 bg="#ffffff", fg=(DC_SUCCESS if ok else COLOR_DANGER),
+                 font=(fam, 9)).pack(anchor="w", pady=(16, 0))
+        ttk.Button(body, text="완료", style="Accent.TButton",
+                   command=lambda: (self._save_settings(), dlg.destroy())).pack(
+                   anchor="e", pady=(14, 0))
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        self._center_popup(dlg)
 
     def _tick_clipboard(self) -> None:
         # 항상 자동 감지: 동영상 링크를 복사하면(새 내용일 때만) URL 칸을 채운다.
@@ -1495,18 +1545,13 @@ class DownloaderApp:
     # ---------------- 다운로드 ----------------
 
     def _start_download(self) -> None:
+        """분석 팝업의 '다운로드 시작'에서 호출. 팝업을 닫고 목록에 추가한다."""
         if self.is_downloading:
+            messagebox.showinfo(APP_TITLE, "이미 다운로드가 진행 중입니다. 끝난 뒤 시작하세요.")
             return
-        url = self.url_var.get().strip()
+        url = (self._pending_url or self.url_var.get()).strip()
         if not url:
-            messagebox.showwarning(APP_TITLE, "영상 링크(URL)를 입력하세요.")
             return
-        if not URL_RE.match(url):
-            if not messagebox.askyesno(
-                APP_TITLE,
-                "올바른 링크(http/https) 형식이 아닌 것 같습니다. 그래도 시도할까요?",
-            ):
-                return
 
         save_dir = Path(self.save_dir_var.get())
         try:
@@ -1529,15 +1574,20 @@ class DownloaderApp:
             ):
                 return
 
-        self._save_settings()   # 현재 선택을 기억 (크래시 대비해 시작 시점에 저장)
+        self._save_settings()
+        # 분석 팝업 닫고 입력칸 비움 → 결과는 메인 '다운로드 목록'에 쌓인다.
+        if self._analyze_dlg is not None and self._analyze_dlg.winfo_exists():
+            self._analyze_dlg.destroy()
+        self._analyze_dlg = None
+        self.url_var.set("")
+        self._pending_url = ""
+        self.last_analyzed_url = ""
 
         self.is_downloading = True
         self.current_dl_vid = None
         self.completed_dl_vids = set()
-        self.download_btn.configure(state="disabled", text="다운로드 중...")
-        self.cancel_btn.configure(state="normal", text="취소")
-        self.cancel_btn.grid()
-        self._show_progress(True)
+        self.cancel_btn.configure(text="■ 취소", fg=COLOR_DANGER)
+        self.cancel_btn.pack(side="right")
         log.info("download start url=%s format=%s", url, format_str)
 
         cfg = DownloadConfig(
@@ -1554,7 +1604,7 @@ class DownloaderApp:
         if not self.is_downloading:
             return
         self.downloader.cancel()
-        self.cancel_btn.configure(state="disabled", text="취소 중...")
+        self.cancel_btn.configure(text="취소 중…", fg=DC_MUTED)
 
     # ---------------- 설정 영속화 ----------------
 
@@ -1776,8 +1826,7 @@ class DownloaderApp:
         완료 처리되지 않은 항목들을 마저 완료 처리하는 안전망 역할을 한다.
         실패 시에는 마지막 진행 항목에 오류를 표시한다."""
         self.is_downloading = False
-        self.download_btn.configure(state="normal", text="다운로드 시작")
-        self.cancel_btn.grid_remove()
+        self.cancel_btn.pack_forget()
 
         cancelled = (err == DOWNLOAD_CANCELLED)
         if ok:
@@ -1820,6 +1869,7 @@ class DownloaderApp:
         widget = HistoryItemFrame(self.history_inner, vid, title)
         self.history_widgets[vid] = widget
         self.history_order.insert(0, vid)
+        self._update_count()
         self._relayout_history()
         if thumb_url and PIL_AVAILABLE:
             threading.Thread(
