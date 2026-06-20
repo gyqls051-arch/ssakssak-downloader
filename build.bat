@@ -33,15 +33,21 @@ if exist "ffmpeg.exe" (
 
 echo.
 echo [4/4] Building exe... (this takes 1-2 minutes)
-REM  --collect-all curl_cffi  : bundles its compiled libcurl DLLs + cacert
-REM     (PyInstaller cannot auto-detect these; onefile crashes without it)
-REM  --collect-submodules mutagen : yt-dlp imports mutagen dynamically
+REM  --add-data web_ui        : 디자인 HTML/CSS 번들 (UI 본체)
+REM  --collect-all webview    : pywebview + bottle 등
+REM  --collect-all pythonnet / clr_loader : WebView2(.NET) 백엔드 로더
+REM  --collect-all curl_cffi  : 컴파일된 libcurl DLL + cacert
+REM  --collect-submodules mutagen : yt-dlp 가 동적 import
 %PY% -m PyInstaller ^
     --noconfirm ^
     --onefile ^
     --windowed ^
     --name "SsakSsakKimchiDownloader" ^
-    --collect-data sv_ttk ^
+    --add-data "web_ui;web_ui" ^
+    --collect-all webview ^
+    --collect-all pythonnet ^
+    --collect-all clr_loader ^
+    --hidden-import clr ^
     --collect-all curl_cffi ^
     --collect-submodules mutagen ^
     %FFMPEG_BUNDLE% ^

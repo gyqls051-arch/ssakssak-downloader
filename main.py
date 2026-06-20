@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
 import logging.handlers
@@ -23,8 +22,7 @@ import shutil
 import subprocess
 import sys
 import threading
-import tkinter as tk
-import tkinter.font as tkfont
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,17 +30,10 @@ import webbrowser
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from tkinter import ttk, filedialog, messagebox
 from typing import Callable
 
+import webview
 import yt_dlp
-
-# Pillow 는 썸네일 표시에만 사용. 없어도 앱은 동작 (회색 박스로 표시).
-try:
-    from PIL import Image, ImageTk  # type: ignore
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
 
 
 # ============================================================
@@ -163,16 +154,6 @@ DC_STATUS_BG = "#edeef1"   # 상태바 배경
 DC_BANNER_BG = "#28324c"   # 광고 배너 배경(그라데이션 대신 단색)
 DC_BANNER_SUB = "#b9c0d2"  # 배너 보조 글자
 DC_BANNER_CTA = "#ff5a2e"  # 배너 CTA 오렌지
-
-
-def preferred_font_family() -> str:
-    """Win11의 'Segoe UI Variable' 우선, 없으면 'Segoe UI'."""
-    try:
-        if "Segoe UI Variable" in tkfont.families():
-            return "Segoe UI Variable"
-    except tk.TclError:
-        pass
-    return "Segoe UI"
 
 
 # ============================================================
@@ -826,514 +807,104 @@ class Settings:
 
 
 # ============================================================
-#  UI
+#  UI (pywebview) — 디자인 HTML 을 렌더하고 백엔드에 연결
 # ============================================================
 
-PAD_OUTER = 28
-PAD_CARD = 22
+def _ui_html_path() -> str:
+    """web_ui/index.html 경로 (소스 실행 / PyInstaller onefile 번들 모두 대응)."""
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    else:
+        base = Path(__file__).parent
+    return str(base / "web_ui" / "index.html")
 
 
-def apply_theme(root: tk.Tk) -> None:
-    """sv-ttk(Win11 라이트) 가능하면 적용. 없으면 clam 폴백."""
+def read_clipboard_text() -> str:
+    """Windows 클립보드의 텍스트를 ctypes 로 읽는다 (의존성 없음). 실패 시 ''."""
+    if os.name != "nt":
+        return ""
+    import ctypes
+    CF_UNICODETEXT = 13
+    u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
+    u32.GetClipboardData.restype = ctypes.c_void_p
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [ctypes.c_void_p]
+    k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    if not u32.OpenClipboard(0):
+        return ""
     try:
-        import sv_ttk  # noqa: WPS433
-        sv_ttk.set_theme("light")
+        if not u32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            return ""
+        handle = u32.GetClipboardData(CF_UNICODETEXT)
+        if not handle:
+            return ""
+        ptr = k32.GlobalLock(handle)
+        if not ptr:
+            return ""
+        try:
+            return ctypes.c_wchar_p(ptr).value or ""
+        finally:
+            k32.GlobalUnlock(handle)
     except Exception:
-        log.info("sv_ttk not available, using fallback")
-        try:
-            ttk.Style(root).theme_use("clam")
-        except tk.TclError:
-            pass
-
-    # 폰트 일관성: 기본 ttk 폰트들을 Segoe UI Variable로
-    fam = preferred_font_family()
-    for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
-        try:
-            f = tkfont.nametofont(name)
-            f.configure(family=fam, size=10)
-        except tk.TclError:
-            pass
-
-    style = ttk.Style(root)
-    # 카드용 보조 스타일 — sv_ttk 위에 살짝만 얹는다.
-    style.configure("Title.TLabel", font=(fam, 20, "bold"))
-    style.configure("Subtitle.TLabel", foreground=COLOR_MUTED, font=(fam, 9))
-    style.configure("CardTitle.TLabel", font=(fam, 13, "bold"))
-    style.configure("CardMuted.TLabel", foreground=COLOR_MUTED, font=(fam, 9))
-    style.configure("Hero.TEntry", padding=12, font=(fam, 13))
-    style.configure("Hint.TLabel", foreground=COLOR_MUTED, font=(fam, 9))
+        return ""
+    finally:
+        u32.CloseClipboard()
 
 
-class HistoryItemFrame(ttk.Frame):
-    """다운로드 한 건(영상 1개)을 표시하는 카드.
-    상태: preparing → downloading → merging → done / error."""
+class Api:
+    """JS(window.pywebview.api)에서 호출하는 백엔드. 모든 사이드이펙트는 여기 격리."""
 
-    THUMB_W = 132
-    THUMB_H = 74   # 16:9
-
-    def __init__(self, parent: tk.Misc, vid: str, title: str):
-        super().__init__(parent)
-        self.vid = vid
-        self.file_path: str | None = None
-        self._photo = None  # PhotoImage 참조 유지 (GC 방지)
-
-        self.columnconfigure(1, weight=1)
-
-        # 좌측: 썸네일 자리 (Canvas 로 픽셀 박스 + 이미지 호스팅)
-        self.thumb_canvas = tk.Canvas(
-            self, width=self.THUMB_W, height=self.THUMB_H,
-            bg="#dcdcdc", highlightthickness=0,
-        )
-        self.thumb_canvas.grid(row=0, column=0, rowspan=2, padx=(10, 14), pady=10)
-
-        # 가운데: 제목 + 상태 메타
-        fam = preferred_font_family()
-        self.title_lbl = ttk.Label(
-            self, text=title or "(분석 중...)",
-            font=(fam, 10, "bold"),
-            wraplength=420, justify="left", anchor="w",
-        )
-        self.title_lbl.grid(row=0, column=1, sticky="ew", pady=(12, 0), padx=(0, 12))
-
-        self.meta_lbl = ttk.Label(self, text="대기 중...", foreground=COLOR_MUTED)
-        self.meta_lbl.grid(row=1, column=1, sticky="w", pady=(2, 12), padx=(0, 12))
-
-        # 우측: 진행률 또는 액션 버튼
-        self.progress = ttk.Progressbar(
-            self, mode="determinate", maximum=100, length=140,
-        )
-        # 처음엔 진행률 표시 (다운로드 중)
-        self.progress.grid(row=0, column=2, rowspan=2, padx=(0, 14), sticky="e")
-
-        self.action_frame = ttk.Frame(self)
-        # 완료/실패 시에만 grid
-
-    # ---------- 외부 호출 ----------
-
-    def set_thumbnail(self, photo) -> None:
-        self._photo = photo
-        self.thumb_canvas.delete("all")
-        self.thumb_canvas.create_image(self.THUMB_W // 2, self.THUMB_H // 2, image=photo)
-
-    def set_title(self, title: str) -> None:
-        if title:
-            self.title_lbl.configure(text=title)
-
-    def set_downloading(self, pct: float, done: int, total: int, speed: float) -> None:
-        self.progress.configure(value=pct)
-        total_mb = total / 1024 / 1024 if total else 0
-        done_mb = done / 1024 / 1024
-        spd_mb = speed / 1024 / 1024 if speed else 0
-        self.meta_lbl.configure(
-            text=f"⏳ {pct:.0f}%  ·  {done_mb:.1f} / {total_mb:.1f} MB  ·  {spd_mb:.2f} MB/s"
-        )
-
-    def set_merging(self, file_path: str) -> None:
-        self.file_path = file_path
-        self.progress.configure(value=99)
-        self.meta_lbl.configure(text="🔄 영상+음성 합치는 중...")
-
-    def set_done(self) -> None:
-        self.progress.grid_forget()
-        size_text = ""
-        if self.file_path:
-            try:
-                size_mb = Path(self.file_path).stat().st_size / 1024 / 1024
-                size_text = f"  ·  {size_mb:.1f} MB"
-            except OSError:
-                pass
-            self.meta_lbl.configure(
-                text=f"✓ 완료{size_text}  ·  {Path(self.file_path).name}",
-                foreground=COLOR_SUCCESS,
-            )
-        else:
-            self.meta_lbl.configure(text="✓ 완료", foreground=COLOR_SUCCESS)
-
-        # 액션 버튼
-        for child in self.action_frame.winfo_children():
-            child.destroy()
-        ttk.Button(self.action_frame, text="폴더 열기",
-                   command=self._open_in_folder).pack(side="top", pady=(0, 4))
-        ttk.Button(self.action_frame, text="재생",
-                   command=self._play_file).pack(side="top")
-        self.action_frame.grid(row=0, column=2, rowspan=2, padx=(0, 14), sticky="e")
-
-    def set_error(self, err: str) -> None:
-        self.progress.grid_forget()
-        short = (err or "알 수 없는 오류").splitlines()[-1][:120]
-        self.meta_lbl.configure(text=f"✗ 실패: {short}", foreground=COLOR_DANGER)
-
-    def set_cancelled(self) -> None:
-        self.progress.grid_forget()
-        self.meta_lbl.configure(text="■ 취소됨", foreground=COLOR_MUTED)
-
-    # ---------- 내부 ----------
-
-    def _open_in_folder(self) -> None:
-        if not self.file_path:
-            return
-        try:
-            # 파일을 선택한 상태로 탐색기 열기
-            subprocess.run(
-                ["explorer", f"/select,{self.file_path}"], check=False,
-            )
-        except Exception:
-            try:
-                os.startfile(Path(self.file_path).parent)
-            except OSError:
-                pass
-
-    def _play_file(self) -> None:
-        if self.file_path and Path(self.file_path).exists():
-            try:
-                os.startfile(self.file_path)
-            except OSError:
-                pass
-
-
-class FfmpegInstallDialog(tk.Toplevel):
-    """ffmpeg 다운로드/설치 진행률 모달.
-    다운로드 중에는 닫을 수 없도록 잠그고, 완료/실패 후에만 닫기 허용."""
-
-    def __init__(self, parent: tk.Misc):
-        super().__init__(parent)
-        self.title("초기 설정")
-        self.geometry("460x210")
-        self.transient(parent)
-        self.grab_set()
-        self.resizable(False, False)
-        self.protocol("WM_DELETE_WINDOW", self._on_close_attempt)
-        self._can_close = False
-
-        fam = preferred_font_family()
-        ttk.Label(self, text="동작에 필요한 파일 업데이트 중",
-                  font=(fam, 14, "bold")).pack(pady=(22, 4))
-        self.msg_var = tk.StringVar(value="잠시만 기다려 주세요...")
-        ttk.Label(self, textvariable=self.msg_var,
-                  foreground=COLOR_MUTED).pack(pady=(0, 14))
-
-        self.progress = ttk.Progressbar(self, mode="determinate", maximum=100)
-        self.progress.pack(fill="x", padx=28)
-
-        self.detail_var = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.detail_var,
-                  foreground=COLOR_MUTED).pack(pady=(10, 0))
-
-        self.close_btn = ttk.Button(self, text="닫기", command=self.destroy)
-        # 에러/완료 시에만 pack
-
-    def _on_close_attempt(self) -> None:
-        if self._can_close:
-            self.destroy()
-
-    def update_progress(self, p: FfmpegProgress) -> None:
-        if p.stage == "downloading":
-            self.msg_var.set("필요한 파일을 받고 있습니다...")
-            self.progress.configure(value=p.pct)
-            self.detail_var.set(p.message)
-        elif p.stage == "extracting":
-            self.msg_var.set("설치 중...")
-            self.progress.configure(value=99)
-            self.detail_var.set("거의 다 됐습니다.")
-        elif p.stage == "done":
-            self.msg_var.set("✓ 준비 완료")
-            self.progress.configure(value=100)
-            self.detail_var.set("")
-            self._can_close = True
-            self.after(800, self.destroy)
-        elif p.stage == "error":
-            self.msg_var.set("✗ 업데이트 실패")
-            self.detail_var.set(p.message)
-            self._can_close = True
-            self.close_btn.pack(pady=(12, 0))
-
-
-class DownloaderApp:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title(f"{APP_TITLE} v{APP_VERSION}")
-        self.root.geometry("760x880")
-        self.root.minsize(680, 820)
-
-        apply_theme(root)
-
-        # 서비스 인스턴스
+    def __init__(self) -> None:
+        self.window = None
+        self.settings = Settings()
+        self.cfg = self.settings.load()
         self.analyzer = VideoAnalyzer()
+        self.installer = FfmpegInstaller()
+        self.updater = UpdateChecker()
+        self.ffmpeg_dir = find_ffmpeg()
+        self._auto_cookie_browser: str | None = None
+        self._last_clip = ""
+        self._cur_id: str | None = None
+        self._cur_filepath: str | None = None
+        self._files: dict[str, str] = {}
+        self.is_downloading = False
+        self._maxed = False
         self.downloader = Downloader(
             on_progress=self._on_progress,
-            on_done=lambda ok, err: self.root.after(0, self._on_done, ok, err),
-            on_item_done=lambda vid, fp: self.root.after(0, self._on_item_done, vid, fp),
+            on_done=self._on_done,
+            on_item_done=self._on_item_done,
         )
-        self.updater = UpdateChecker()
-        self.installer = FfmpegInstaller()
-        self.settings = Settings()
-        self._cfg = self.settings.load()   # 저장된 설정 (없으면 {})
 
-        # 상태
-        self.ffmpeg_dir = find_ffmpeg()
-        self.is_downloading = False
-        self.is_analyzing = False
-        self.last_clipboard = ""
-        self.last_analyzed_url = ""
-        self.analyze_after_id: str | None = None
-        # 로그인 필요한 영상에서 분석이 자동으로 찾아낸 브라우저(다운로드에 재사용).
-        self._auto_cookie_browser: str | None = None
-        self.update_decision: UpdateDecision | None = None
-        self._ffmpeg_prompt_handled = False
-        self._analyze_dlg: tk.Toplevel | None = None
-        self._pending_url = ""
-        self._popup_photo = None
-        self._exit_promo_photo = None
+    def set_window(self, w) -> None:
+        self.window = w
 
-        # 입력/옵션 변수 (메인·분석팝업·설정팝업이 공유)
-        default_dir = str(Path.home() / "Downloads" / "싹싹김치 다운로드")
-        self.url_var = tk.StringVar()
-        self.url_var.trace_add("write", self._on_url_changed)
-        self.url_status_var = tk.StringVar(value="")
-        self.quality_var = tk.StringVar(value=self._cfg.get("quality", "1080p (FHD)"))
-        self.format_var = tk.StringVar(value=self._cfg.get("format", FORMAT_TABLE[0][0]))
-        self.save_dir_var = tk.StringVar(value=self._cfg.get("save_dir", default_dir))
+    # ---------------- 내부 헬퍼 ----------------
 
-        # 다운로드 히스토리: 최신순으로 쌓이는 4K Downloader 식 카드 리스트
-        self.history_widgets: dict[str, HistoryItemFrame] = {}
-        self.history_order: list[str] = []   # vid 들, 새 항목이 앞에 insert(0, ...)
-        self.current_dl_vid: str | None = None
-        # 이번 다운로드 세션에서 개별 완료 처리된 vid 집합.
-        # 플레이리스트/다중 항목에서 각 항목을 한 번씩만 완료 처리하기 위함.
-        self.completed_dl_vids: set[str] = set()
-
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._build_ui()
-        # 원격 정지(킬스위치): 이전에 받은 정지 신호가 있으면 즉시 종료(오프라인 포함).
-        if self._enforce_sticky_kill():
-            self.aborted = True
-            self.root.destroy()
+    def _js(self, code: str) -> None:
+        w = self.window
+        if w is None:
             return
-        # 첫 실행(또는 약관 변경) 시 면책 동의. 거부하면 실행을 중단한다.
-        if not self._require_tos():
-            self.aborted = True
-            self.root.destroy()
-            return
-        self.aborted = False
-        self._tick_clipboard()
-        self._check_update_async()
-        # 앱 렌더링이 끝난 뒤 ffmpeg 설치 안내 (없을 때만)
-        self.root.after(500, self._maybe_offer_ffmpeg)
-
-    # ---------------- 빌드 ----------------
-
-    def _build_ui(self) -> None:
-        fam = preferred_font_family()
-        self._url_hint = "링크를 복사하면 자동으로 채워지고, 분석 결과가 팝업으로 표시됩니다."
-        self.url_status_var.set(self._url_hint)
-        self.root.configure(bg=DC_BG)
-        self.container = tk.Frame(self.root, bg=DC_BG)
-        self.container.pack(fill="both", expand=True, padx=18, pady=14)
-
-        # 헤더: 타이틀 + 버전 + 설정(기어)
-        header = tk.Frame(self.container, bg=DC_BG)
-        header.pack(side="top", fill="x", pady=(0, 12))
-        tk.Label(header, text="↓  " + APP_TITLE, bg=DC_BG, fg=DC_INK,
-                 font=(fam, 16, "bold")).pack(side="left")
-        tk.Label(header, text="v" + APP_VERSION, bg=DC_BG, fg=DC_MUTED,
-                 font=(fam, 9)).pack(side="left", padx=(8, 0), pady=(7, 0))
-        gear = tk.Label(header, text="⚙  설정", bg=DC_BG, fg=DC_MUTED,
-                        font=(fam, 10), cursor="hand2")
-        gear.pack(side="right", pady=(5, 0))
-        gear.bind("<Button-1>", lambda _e: self._show_settings_popup())
-
-        # 하단 고정(아래→위): 상태바 · 광고배너 · 업데이트알림
-        self._build_statusbar(fam)
-        self._build_banner(fam)
-        self.update_label = tk.Label(self.container, text="", bg=DC_BG, fg=DC_BLUE,
-                                     cursor="hand2", anchor="w", font=(fam, 9))
-        self.update_label.pack(side="bottom", fill="x", pady=(8, 4))
-
-        # 위: URL 카드 + 다운로드 목록(남는 공간 채움)
-        self._build_url_card(fam)
-        self._build_list_card(fam)
-
-    @staticmethod
-    def _card(parent: tk.Misc) -> tk.Frame:
-        return tk.Frame(parent, bg=DC_CARD, highlightbackground=DC_CARD_BD,
-                        highlightcolor=DC_CARD_BD, highlightthickness=1)
-
-    def _build_url_card(self, fam: str) -> None:
-        card = self._card(self.container)
-        card.pack(side="top", fill="x", pady=(0, 11))
-        inner = tk.Frame(card, bg=DC_CARD)
-        inner.pack(fill="x", padx=14, pady=13)
-
-        tk.Label(inner, text="영상 링크", bg=DC_CARD, fg=DC_MUTED,
-                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 8))
-        row = tk.Frame(inner, bg=DC_CARD)
-        row.pack(fill="x")
-        self.url_entry = ttk.Entry(row, textvariable=self.url_var, font=(fam, 11))
-        self.url_entry.pack(side="left", fill="x", expand=True, ipady=4)
-        ttk.Button(row, text="붙여넣기 · 분석", style="Accent.TButton",
-                   command=self._paste_and_analyze).pack(side="left", padx=(7, 0))
-        tk.Label(inner, textvariable=self.url_status_var, bg=DC_CARD, fg=DC_MUTED2,
-                 font=(fam, 9), anchor="w", justify="left", wraplength=660
-                 ).pack(anchor="w", pady=(9, 0))
-
-    def _build_list_card(self, fam: str) -> None:
-        card = self._card(self.container)
-        card.pack(side="top", fill="both", expand=True)
-        head = tk.Frame(card, bg=DC_CARD)
-        head.pack(fill="x", padx=14, pady=(12, 9))
-        tk.Label(head, text="다운로드 목록", bg=DC_CARD, fg=DC_MUTED,
-                 font=(fam, 9, "bold")).pack(side="left")
-        self.count_badge = tk.Label(head, text="0개", bg="#edeef1", fg="#6a7079",
-                                     font=(fam, 8, "bold"), padx=7, pady=1)
-        self.count_badge.pack(side="left", padx=(8, 0))
-        # 취소: 다운로드 중에만 우측에 표시 (pack/pack_forget 로 토글)
-        self.cancel_btn = tk.Label(head, text="■ 취소", bg=DC_CARD, fg=COLOR_DANGER,
-                                   font=(fam, 9, "bold"), cursor="hand2")
-        self.cancel_btn.bind("<Button-1>", lambda _e: self._cancel_download())
-
-        body = tk.Frame(card, bg=COLOR_LOG_BG)
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        body.columnconfigure(0, weight=1)
-        body.rowconfigure(0, weight=1)
-        self.history_canvas = tk.Canvas(body, highlightthickness=0, bg=COLOR_LOG_BG,
-                                        height=210)
-        self.history_canvas.grid(row=0, column=0, sticky="nsew")
-        vscroll = ttk.Scrollbar(body, orient="vertical",
-                                command=self.history_canvas.yview)
-        vscroll.grid(row=0, column=1, sticky="ns")
-        self.history_canvas.configure(yscrollcommand=vscroll.set)
-        self.history_inner = tk.Frame(self.history_canvas, bg=COLOR_LOG_BG)
-        self.history_window = self.history_canvas.create_window(
-            (0, 0), window=self.history_inner, anchor="nw")
-        self.history_inner.bind(
-            "<Configure>",
-            lambda _e: self.history_canvas.configure(
-                scrollregion=self.history_canvas.bbox("all")))
-        self.history_canvas.bind(
-            "<Configure>",
-            lambda e: self.history_canvas.itemconfigure(self.history_window, width=e.width))
-
-        def _on_wheel(e: tk.Event) -> None:
-            self.history_canvas.yview_scroll(int(-e.delta / 120), "units")
-        self.history_canvas.bind("<MouseWheel>", _on_wheel)
-        self.history_inner.bind("<MouseWheel>", _on_wheel)
-
-        self.history_empty_lbl = tk.Label(
-            self.history_inner, text="링크를 붙여넣어 다운로드를 시작하세요",
-            fg=DC_MUTED2, bg=COLOR_LOG_BG, font=(fam, 10))
-        self.history_empty_lbl.pack(pady=40)
-
-    def _build_banner(self, fam: str) -> None:
-        """목업 광고 배너 (외부 광고주처럼). 클릭 시 PROMO_URL."""
-        b = tk.Frame(self.container, bg=DC_BANNER_BG, cursor="hand2")
-        b.pack(side="bottom", fill="x", pady=(8, 0))
-
-        def go(_e: object = None) -> None:
-            safe_open_url(PROMO_URL)
-
-        parts = [b]
-        logo = tk.Label(b, text="O", bg=DC_BANNER_CTA, fg="#ffffff",
-                        font=(fam, 14, "bold"), width=3)
-        logo.pack(side="left", padx=(14, 12), pady=11)
-        parts.append(logo)
-        mid = tk.Frame(b, bg=DC_BANNER_BG)
-        mid.pack(side="left", fill="x", expand=True)
-        parts.append(mid)
-        l1 = tk.Label(mid, text="OFFCUT STUDIO    ·    제휴", bg=DC_BANNER_BG,
-                      fg="#ffffff", font=(fam, 10, "bold"), anchor="w")
-        l1.pack(anchor="w")
-        parts.append(l1)
-        l2 = tk.Label(mid, text="촬영부터 편집·납품까지, 영상 제작의 모든 것을 한 곳에서",
-                      bg=DC_BANNER_BG, fg=DC_BANNER_SUB, font=(fam, 9), anchor="w")
-        l2.pack(anchor="w")
-        parts.append(l2)
-        cta = tk.Label(b, text="무료로 시작 →", bg=DC_BANNER_CTA, fg="#ffffff",
-                       font=(fam, 9, "bold"), padx=14, pady=6)
-        cta.pack(side="right", padx=14)
-        parts.append(cta)
-        for w in parts:
-            w.bind("<Button-1>", go)
-
-    def _build_statusbar(self, fam: str) -> None:
-        bar = tk.Frame(self.container, bg=DC_STATUS_BG)
-        bar.pack(side="bottom", fill="x", pady=(8, 0))
-        if self.ffmpeg_dir:
-            self.ffmpeg_lbl = tk.Label(bar, text="● 준비 완료 · ffmpeg 설치됨",
-                                       bg=DC_STATUS_BG, fg=DC_SUCCESS, font=(fam, 9))
-        else:
-            self.ffmpeg_lbl = tk.Label(bar, text="● 추가 파일 필요 — 클릭하여 설치",
-                                       bg=DC_STATUS_BG, fg=COLOR_DANGER, font=(fam, 9),
-                                       cursor="hand2")
-            self.ffmpeg_lbl.bind("<Button-1>",
-                                 lambda _e: self._prompt_install_ffmpeg(force=True))
-        self.ffmpeg_lbl.pack(side="left", padx=12, pady=5)
-        tk.Label(bar, text="개인적 저장 용도 · 저작권 준수 책임은 사용자",
-                 bg=DC_STATUS_BG, fg=DC_MUTED, font=(fam, 8)).pack(side="right", padx=12)
-
-    def _update_count(self) -> None:
-        self.count_badge.configure(text=f"{len(self.history_widgets)}개")
-
-    # ---------------- 헬퍼 ----------------
-
-    def _paste(self) -> None:
         try:
-            self.url_var.set(self.root.clipboard_get().strip())
-        except tk.TclError:
+            w.evaluate_js(code)
+        except Exception:
             pass
 
-    def _pick_folder(self) -> None:
-        d = filedialog.askdirectory(initialdir=self.save_dir_var.get() or str(Path.home()))
-        if d:
-            self.save_dir_var.set(d)
+    @staticmethod
+    def _default_dir() -> str:
+        return str(Path.home() / "Downloads" / "싹싹김치 다운로드")
 
-    def _open_folder(self) -> None:
-        d = self.save_dir_var.get()
-        try:
-            Path(d).mkdir(parents=True, exist_ok=True)
-            os.startfile(d)
-        except OSError:
-            log.exception("open folder failed")
-            messagebox.showerror(APP_TITLE, "폴더를 열 수 없습니다.")
+    def _save_short(self) -> str:
+        parts = [p for p in re.split(r"[\\/]", self.cfg.get("save_dir", self._default_dir())) if p]
+        full = self.cfg.get("save_dir", self._default_dir())
+        return "…\\" + "\\".join(parts[-2:]) if len(parts) > 2 else full
 
-    # ---------------- URL 분석 ----------------
+    def _qualities_for(self, result: AnalysisResult) -> list[str]:
+        if not result.heights:
+            return [lbl for lbl, _ in QUALITY_TABLE]
+        max_h = max(result.heights)
+        return [lbl for lbl, h in QUALITY_TABLE if h is None or h == -1 or h <= max_h]
 
-    def _on_url_changed(self, *_: object) -> None:
-        if self.analyze_after_id is not None:
-            self.root.after_cancel(self.analyze_after_id)
-        self.analyze_after_id = self.root.after(600, self._maybe_analyze)
-
-    def _maybe_analyze(self) -> None:
-        url = self.url_var.get().strip()
-        if not url:
-            self.url_status_var.set(self._url_hint)
-            self.last_analyzed_url = ""
-            return
-        if not URL_RE.match(url):
-            self.url_status_var.set("⚠ 올바른 링크(http/https) 형식이 아닙니다.")
-            return
-        if url == self.last_analyzed_url or self.is_analyzing:
-            return
-        self.last_analyzed_url = url
-        self.is_analyzing = True
-        self.url_status_var.set("⏳ 영상 정보 분석 중...")
-        threading.Thread(
-            target=self._analyze_worker, args=(url,), daemon=True,
-        ).start()
-
-    def _analyze_worker(self, url: str) -> None:
-        try:
-            result, browser = self._probe_with_auto_cookies(url)
-            self._auto_cookie_browser = browser   # 다운로드에 재사용
-            self.root.after(0, self._apply_analysis, url, result)
-        except Exception as e:
-            log.exception("analysis failed")
-            self.root.after(0, self._apply_analysis_error, url, str(e))
-        finally:
-            self.is_analyzing = False
-
-    def _probe_with_auto_cookies(self, url: str) -> tuple[AnalysisResult, str | None]:
-        """쿠키 없이 먼저 분석하고, 로그인 오류면 설치된 브라우저 쿠키로 1회 재시도.
-        (결과, 사용한 브라우저 or None)을 돌려준다. 끝까지 실패하면 예외 전파."""
+    def _probe_auto(self, url: str) -> tuple[AnalysisResult, str | None]:
         try:
             return self.analyzer.probe(url, None), None
         except Exception as e:
@@ -1345,651 +916,258 @@ class DownloaderApp:
             log.info("retrying analysis with %s cookies", browser)
             return self.analyzer.probe(url, browser), browser
 
-    def _apply_analysis(self, url: str, result: AnalysisResult) -> None:
-        # URL이 다시 바뀐 뒤 늦게 도착한 결과는 버린다.
-        if url != self.last_analyzed_url:
-            return
-        self.url_status_var.set(self._url_hint)
-        # 현재 영상에서 가능한 화질 목록 계산
-        if result.heights:
-            max_h = max(result.heights)
-            labels = [label for label, h in QUALITY_TABLE
-                      if h is None or h == -1 or h <= max_h]
-            if self.quality_var.get() not in labels:
-                self.quality_var.set(
-                    "1080p (FHD)" if "1080p (FHD)" in labels else "최고화질 (자동)")
-        else:
-            labels = [label for label, _ in QUALITY_TABLE]
-        self._pending_url = url
-        self._show_analyze_popup(result, labels)
+    # ---------------- JS 호출용 API ----------------
 
-    def _apply_analysis_error(self, url: str, err: str) -> None:
-        if url != self.last_analyzed_url:
-            return
-        short = err.splitlines()[-1][:120] if err else "알 수 없는 오류"
-        self.url_status_var.set(f"⚠ 영상 정보를 가져오지 못했습니다: {short}")
+    def get_init(self) -> dict:
+        return {
+            "app_title": APP_TITLE,
+            "version": APP_VERSION,
+            "ffmpeg_ok": self.ffmpeg_dir is not None,
+            "tos_accepted": self.cfg.get("tos_accepted") == TOS_VERSION,
+            "save_dir": self.cfg.get("save_dir", self._default_dir()),
+            "quality": self.cfg.get("quality", "1080p (FHD)"),
+            "format": self.cfg.get("format", FORMAT_TABLE[0][0]),
+            "qualities": [lbl for lbl, _ in QUALITY_TABLE],
+            "formats": [lbl for lbl, _ in FORMAT_TABLE],
+            "promo_url": PROMO_URL,
+            "hint": "링크를 복사하면 자동으로 채워지고, 분석 결과가 팝업으로 표시됩니다.",
+        }
 
-    # ---------------- 영상정보 팝업 (4K식) ----------------
+    def accept_tos(self) -> None:
+        self.cfg["tos_accepted"] = TOS_VERSION
+        self.settings.save(self.cfg)
 
-    def _paste_and_analyze(self) -> None:
-        """붙여넣기 + 즉시 분석 (같은 URL 이어도 강제 재분석)."""
+    def read_clipboard(self) -> str:
+        return read_clipboard_text()
+
+    def analyze(self, url: str) -> dict:
+        url = (url or "").strip()
+        if not URL_RE.match(url):
+            return {"ok": False, "error": "올바른 링크(http/https)가 아닙니다"}
         try:
-            txt = self.root.clipboard_get().strip()
-            if txt:
-                self.url_var.set(txt)
-        except tk.TclError:
-            pass
-        self.last_analyzed_url = ""
-        if self.analyze_after_id is not None:
-            self.root.after_cancel(self.analyze_after_id)
-            self.analyze_after_id = None
-        self._maybe_analyze()
-
-    def _save_dir_short(self) -> str:
-        parts = [p for p in re.split(r"[\\/]", self.save_dir_var.get()) if p]
-        return "…\\" + "\\".join(parts[-2:]) if len(parts) > 2 else self.save_dir_var.get()
-
-    def _center_popup(self, dlg: tk.Toplevel) -> None:
-        dlg.update_idletasks()
-        try:
-            px, py = self.root.winfo_rootx(), self.root.winfo_rooty()
-            pw, ph = self.root.winfo_width(), self.root.winfo_height()
-            w, h = dlg.winfo_width(), dlg.winfo_height()
-            dlg.geometry(f"+{px + max(0, (pw - w) // 2)}+{py + max(0, (ph - h) // 2)}")
-        except tk.TclError:
-            pass
-
-    def _show_analyze_popup(self, result: AnalysisResult, labels: list[str]) -> None:
-        if self._analyze_dlg is not None and self._analyze_dlg.winfo_exists():
-            self._analyze_dlg.destroy()
-        fam = preferred_font_family()
-        dlg = tk.Toplevel(self.root, bg="#ffffff")
-        self._analyze_dlg = dlg
-        dlg.title("영상 정보")
-        dlg.transient(self.root)
-        dlg.resizable(False, False)
-        dlg.grab_set()
-
-        head = tk.Frame(dlg, bg="#ffffff")
-        head.pack(fill="x", padx=16, pady=(14, 0))
-        tk.Label(head, text="영상 정보", bg="#ffffff", fg=DC_INK,
-                 font=(fam, 12, "bold")).pack(side="left")
-        x = tk.Label(head, text="✕", bg="#ffffff", fg="#7c828d", font=(fam, 12),
-                     cursor="hand2")
-        x.pack(side="right")
-        x.bind("<Button-1>", lambda _e: dlg.destroy())
-
-        body = tk.Frame(dlg, bg="#ffffff")
-        body.pack(fill="both", expand=True, padx=16, pady=14)
-        top = tk.Frame(body, bg="#ffffff")
-        top.pack(fill="x")
-        top.columnconfigure(1, weight=1)
-        self.popup_thumb = tk.Canvas(top, width=152, height=85, bg="#dde3ec",
-                                     highlightthickness=0)
-        self.popup_thumb.grid(row=0, column=0, rowspan=2, padx=(0, 13), sticky="n")
-        self.popup_thumb.create_text(76, 42, text="▶", fill="#5b6472", font=(fam, 16))
-        self._popup_photo = None
-        tk.Label(top, text=result.title, bg="#ffffff", fg=DC_INK,
-                 font=(fam, 12, "bold"), wraplength=270, justify="left",
-                 anchor="w").grid(row=0, column=1, sticky="w")
-        tk.Label(top, text=result.meta, bg="#ffffff", fg=DC_MUTED, font=(fam, 9),
-                 wraplength=270, justify="left", anchor="w").grid(
-                 row=1, column=1, sticky="nw", pady=(6, 0))
-
-        opt = tk.Frame(body, bg="#ffffff")
-        opt.pack(fill="x", pady=(15, 0))
-        opt.columnconfigure(0, weight=1)
-        opt.columnconfigure(1, weight=1)
-        qf = tk.Frame(opt, bg="#ffffff")
-        qf.grid(row=0, column=0, sticky="ew", padx=(0, 7))
-        tk.Label(qf, text="화질", bg="#ffffff", fg=DC_MUTED,
-                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 5))
-        ttk.Combobox(qf, textvariable=self.quality_var, values=labels,
-                     state="readonly").pack(fill="x")
-        ff = tk.Frame(opt, bg="#ffffff")
-        ff.grid(row=0, column=1, sticky="ew", padx=(7, 0))
-        tk.Label(ff, text="포맷", bg="#ffffff", fg=DC_MUTED,
-                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 5))
-        ttk.Combobox(ff, textvariable=self.format_var,
-                     values=[lbl for lbl, _ in FORMAT_TABLE],
-                     state="readonly").pack(fill="x")
-
-        foot = tk.Frame(body, bg="#ffffff")
-        foot.pack(fill="x", pady=(16, 0))
-        tk.Label(foot, text="저장: " + self._save_dir_short(), bg="#ffffff",
-                 fg=DC_MUTED2, font=(fam, 8)).pack(side="left")
-        ttk.Button(foot, text="다운로드 시작", style="Accent.TButton",
-                   command=self._start_download).pack(side="right")
-        ttk.Button(foot, text="취소", command=dlg.destroy).pack(side="right", padx=(0, 8))
-
-        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
-        dlg.bind("<Escape>", lambda _e: dlg.destroy())
-        if result.thumbnail and PIL_AVAILABLE:
-            threading.Thread(target=self._fetch_popup_thumb,
-                             args=(result.thumbnail,), daemon=True).start()
-        self._center_popup(dlg)
-
-    def _fetch_popup_thumb(self, thumb_url: str) -> None:
-        try:
-            req = urllib.request.Request(thumb_url, headers={"User-Agent": HTTP_UA})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read(3_000_000)
-            img = Image.open(io.BytesIO(data)).convert("RGB")
-            img.thumbnail((152, 85))
+            result, browser = self._probe_auto(url)
+            self._auto_cookie_browser = browser
         except Exception as e:
-            log.info("popup thumbnail fetch failed: %s", e)
-            return
-        self.root.after(0, self._apply_popup_thumb, img)
+            log.info("analyze failed: %s", e)
+            return {"ok": False, "error": (str(e).splitlines()[-1] if str(e) else "분석 실패")[:140]}
+        qs = self._qualities_for(result)
+        default_q = self.cfg.get("quality", "1080p (FHD)")
+        if default_q not in qs:
+            default_q = "1080p (FHD)" if "1080p (FHD)" in qs else qs[0]
+        return {
+            "ok": True, "url": url, "title": result.title, "meta": result.meta,
+            "thumbnail": result.thumbnail, "qualities": qs, "quality": default_q,
+            "save_short": self._save_short(),
+        }
 
-    def _apply_popup_thumb(self, img: object) -> None:
-        dlg = self._analyze_dlg
-        if dlg is None or not dlg.winfo_exists():
-            return
-        try:
-            photo = ImageTk.PhotoImage(img)   # 메인 스레드 생성
-        except Exception as e:
-            log.info("popup thumbnail render failed: %s", e)
-            return
-        self._popup_photo = photo
-        self.popup_thumb.delete("all")
-        self.popup_thumb.create_image(76, 42, image=photo)
-
-    def _show_settings_popup(self) -> None:
-        fam = preferred_font_family()
-        dlg = tk.Toplevel(self.root, bg="#ffffff")
-        dlg.title("설정")
-        dlg.transient(self.root)
-        dlg.resizable(False, False)
-        dlg.grab_set()
-        head = tk.Frame(dlg, bg="#ffffff")
-        head.pack(fill="x", padx=16, pady=(14, 0))
-        tk.Label(head, text="설정", bg="#ffffff", fg=DC_INK,
-                 font=(fam, 12, "bold")).pack(side="left")
-        x = tk.Label(head, text="✕", bg="#ffffff", fg="#7c828d", font=(fam, 12),
-                     cursor="hand2")
-        x.pack(side="right")
-        x.bind("<Button-1>", lambda _e: dlg.destroy())
-        body = tk.Frame(dlg, bg="#ffffff")
-        body.pack(fill="both", expand=True, padx=16, pady=14)
-        tk.Label(body, text="저장 위치", bg="#ffffff", fg=DC_MUTED,
-                 font=(fam, 9, "bold")).pack(anchor="w", pady=(0, 6))
-        row = tk.Frame(body, bg="#ffffff")
-        row.pack(fill="x")
-        ttk.Entry(row, textvariable=self.save_dir_var, font=(fam, 9)).pack(
-            side="left", fill="x", expand=True, ipady=3)
-        ttk.Button(row, text="찾기", command=self._pick_folder).pack(side="left", padx=(6, 0))
-        ttk.Button(row, text="열기", command=self._open_folder).pack(side="left", padx=(6, 0))
-        ok = self.ffmpeg_dir is not None
-        tk.Label(body, text=("● ffmpeg 설치됨 · 준비 완료" if ok else "● 추가 파일 필요"),
-                 bg="#ffffff", fg=(DC_SUCCESS if ok else COLOR_DANGER),
-                 font=(fam, 9)).pack(anchor="w", pady=(16, 0))
-        ttk.Button(body, text="완료", style="Accent.TButton",
-                   command=lambda: (self._save_settings(), dlg.destroy())).pack(
-                   anchor="e", pady=(14, 0))
-        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
-        self._center_popup(dlg)
-
-    def _tick_clipboard(self) -> None:
-        # 항상 자동 감지: 동영상 링크를 복사하면(새 내용일 때만) URL 칸을 채운다.
-        if not self.is_downloading:
-            try:
-                txt = self.root.clipboard_get().strip()
-                if (txt and txt != self.last_clipboard
-                        and URL_RE.match(txt) and VIDEO_HOST_RE.search(txt)):
-                    self.last_clipboard = txt
-                    self.url_var.set(txt)
-            except tk.TclError:
-                pass
-        self.root.after(1000, self._tick_clipboard)
-
-    # ---------------- 다운로드 ----------------
-
-    def _start_download(self) -> None:
-        """분석 팝업의 '다운로드 시작'에서 호출. 팝업을 닫고 목록에 추가한다."""
+    def start_download(self, job_id: str, url: str, quality: str, fmt: str) -> dict:
         if self.is_downloading:
-            messagebox.showinfo(APP_TITLE, "이미 다운로드가 진행 중입니다. 끝난 뒤 시작하세요.")
-            return
-        url = (self._pending_url or self.url_var.get()).strip()
-        if not url:
-            return
-
-        save_dir = Path(self.save_dir_var.get())
+            return {"ok": False, "error": "이미 다운로드가 진행 중입니다"}
+        save_dir = Path(self.cfg.get("save_dir", self._default_dir()))
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            messagebox.showerror(APP_TITLE, f"저장 폴더를 만들 수 없습니다:\n{e}")
-            return
+            return {"ok": False, "error": f"저장 폴더를 만들 수 없습니다: {e}"}
+        is_audio = "음성만" in quality
+        if self.ffmpeg_dir is None and not is_audio:
+            return {"ok": False, "error": "ffmpeg 준비 중입니다. 잠시 후 다시 시도하세요"}
+        height = dict(QUALITY_TABLE).get(quality)
+        container = dict(FORMAT_TABLE).get(fmt, "mp4")
+        fmt_str = "bestaudio/best" if is_audio else build_format_selector(height, container)
+        self.cfg["quality"] = quality
+        self.cfg["format"] = fmt
+        self.settings.save(self.cfg)
 
-        quality_label = self.quality_var.get()
-        is_audio_only = "음성만" in quality_label
-        height = dict(QUALITY_TABLE).get(quality_label)
-        container = dict(FORMAT_TABLE).get(self.format_var.get(), "mp4")
-        format_str = "bestaudio/best" if is_audio_only else build_format_selector(height, container)
-
-        if not self.ffmpeg_dir and not is_audio_only:
-            if not messagebox.askyesno(
-                APP_TITLE,
-                "ffmpeg가 없어 4K 영상과 음성을 합칠 수 없습니다.\n"
-                "음성 없는 영상이 받아질 수 있습니다. 계속할까요?",
-            ):
-                return
-
-        self._save_settings()
-        # 분석 팝업 닫고 입력칸 비움 → 결과는 메인 '다운로드 목록'에 쌓인다.
-        if self._analyze_dlg is not None and self._analyze_dlg.winfo_exists():
-            self._analyze_dlg.destroy()
-        self._analyze_dlg = None
-        self.url_var.set("")
-        self._pending_url = ""
-        self.last_analyzed_url = ""
-
+        self._cur_id = job_id
+        self._cur_filepath = None
         self.is_downloading = True
-        self.current_dl_vid = None
-        self.completed_dl_vids = set()
-        self.cancel_btn.configure(text="■ 취소", fg=COLOR_DANGER)
-        self.cancel_btn.pack(side="right")
-        log.info("download start url=%s format=%s", url, format_str)
-
         cfg = DownloadConfig(
-            url=url, out_dir=str(save_dir),
-            format_str=format_str, is_audio_only=is_audio_only,
-            container=container, ffmpeg_dir=self.ffmpeg_dir,
-            cookies_browser=self._auto_cookie_browser,   # 로그인 영상이면 자동 감지된 값
-            embed_metadata=True,                         # 항상 메타데이터·썸네일 삽입
+            url=url, out_dir=str(save_dir), format_str=fmt_str,
+            is_audio_only=is_audio, container=container, ffmpeg_dir=self.ffmpeg_dir,
+            cookies_browser=self._auto_cookie_browser, embed_metadata=True,
         )
+        log.info("download start id=%s url=%s", job_id, url)
         threading.Thread(target=self.downloader.run, args=(cfg,), daemon=True).start()
+        return {"ok": True}
 
-    def _cancel_download(self) -> None:
-        """진행 중인 다운로드 취소 요청. 다음 진행률 콜백 때 실제로 멈춘다."""
-        if not self.is_downloading:
-            return
-        self.downloader.cancel()
-        self.cancel_btn.configure(text="취소 중…", fg=DC_MUTED)
+    def cancel_download(self) -> None:
+        if self.is_downloading:
+            self.downloader.cancel()
 
-    # ---------------- 설정 영속화 ----------------
-
-    def _collect_settings(self) -> dict:
-        """현재 UI 선택값을 config.json 에 저장할 dict 로 모은다."""
-        return {
-            "save_dir": self.save_dir_var.get(),
-            "quality": self.quality_var.get(),
-            "format": self.format_var.get(),
-            "tos_accepted": self._cfg.get("tos_accepted"),
-            "killed": self._cfg.get("killed", False),
-            "killed_message": self._cfg.get("killed_message", ""),
-        }
-
-    def _save_settings(self) -> None:
-        self.settings.save(self._collect_settings())
-
-    def _on_close(self) -> None:
-        """창 닫기: 설정 저장 → 광고 1회 노출 → 종료."""
-        self._save_settings()
-        self._show_exit_promo()
-        self.root.destroy()
-
-    # ---------------- 약관 동의 / 광고 ----------------
-
-    def _require_tos(self) -> bool:
-        """첫 실행(또는 약관 변경) 시 면책 동의를 받는다. 동의=True, 거부=False.
-        이미 현재 버전 약관에 동의했으면 묻지 않고 바로 통과."""
-        if self._cfg.get("tos_accepted") == TOS_VERSION:
-            return True
-
-        dlg = tk.Toplevel(self.root)
-        dlg.title(f"{APP_TITLE} · 이용약관 및 면책")
-        dlg.geometry("560x470")
-        dlg.transient(self.root)
-        dlg.grab_set()
-        dlg.resizable(False, True)   # 세로는 조절 가능(안전망)
-        dlg.minsize(560, 360)
-        result = {"ok": False}
-
-        fam = preferred_font_family()
-        ttk.Label(dlg, text="이용약관 및 면책 고지",
-                  font=(fam, 14, "bold")).pack(side="top", pady=(18, 8))
-
-        # 버튼 줄을 먼저 '아래'에 고정해야, 본문 Text 가 길어도 버튼이 안 밀린다.
-        btns = ttk.Frame(dlg)
-        btns.pack(side="bottom", fill="x", padx=18, pady=14)
-
-        txt = tk.Text(dlg, wrap="word", relief="flat", bg=COLOR_LOG_BG,
-                      padx=14, pady=10, font=(fam, 10), height=12)
-        txt.insert("1.0", TOS_BODY)
-        txt.configure(state="disabled")
-        txt.pack(side="top", fill="both", expand=True, padx=18, pady=(0, 4))
-
-        def accept() -> None:
-            result["ok"] = True
-            self._cfg["tos_accepted"] = TOS_VERSION
-            dlg.destroy()
-
-        def decline() -> None:
-            result["ok"] = False
-            dlg.destroy()
-
-        ok_btn = ttk.Button(btns, text="동의함", style="Accent.TButton",
-                            command=accept)
-        ok_btn.pack(side="right")
-        ttk.Button(btns, text="종료", command=decline).pack(side="right", padx=(0, 8))
-        ok_btn.focus_set()
-        dlg.bind("<Return>", lambda _e: accept())
-        dlg.protocol("WM_DELETE_WINDOW", decline)
-
-        self.root.wait_window(dlg)
-        if result["ok"]:
-            self._save_settings()   # 동의 기록 영속화
-        return result["ok"]
-
-    def _show_exit_promo(self) -> None:
-        """종료 시 광고 1회 노출. 큰 배너 이미지가 준비됐으면 크게, 아니면 텍스트."""
+    def pick_folder(self) -> str | None:
         try:
-            dlg = tk.Toplevel(self.root)
-            dlg.title("이용해 주셔서 감사합니다")
-            dlg.transient(self.root)
-            dlg.grab_set()
-            dlg.resizable(False, False)
-            fam = preferred_font_family()
+            res = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception:
+            return None
+        if not res:
+            return None
+        d = res[0] if isinstance(res, (list, tuple)) else res
+        self.cfg["save_dir"] = d
+        self.settings.save(self.cfg)
+        return d
 
-            ttk.Button(dlg, text="닫기", command=dlg.destroy).pack(
-                side="bottom", pady=(6, 14))
-            ttk.Label(dlg, text="이용해 주셔서 감사합니다!",
-                      font=(fam, 13, "bold")).pack(side="top", pady=(18, 8))
+    def open_folder(self) -> None:
+        d = self.cfg.get("save_dir", self._default_dir())
+        try:
+            Path(d).mkdir(parents=True, exist_ok=True)
+            os.startfile(d)  # noqa: S606
+        except OSError:
+            log.exception("open folder failed")
 
-            if self._exit_promo_photo is not None:
-                w, h = self._exit_promo_photo.width(), self._exit_promo_photo.height()
-                img_lbl = tk.Label(dlg, image=self._exit_promo_photo,
-                                   cursor="hand2", bd=0)
-                img_lbl.pack(side="top", padx=24, pady=10)
-                img_lbl.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
-                dlg.geometry(f"{w + 56}x{h + 130}")
-            else:
-                promo = tk.Label(dlg, text=PROMO_TEXT, fg=COLOR_ACCENT, bg="#eef4ff",
-                                 cursor="hand2", padx=10, pady=12, wraplength=360,
-                                 justify="center", font=(fam, 10))
-                promo.pack(side="top", fill="x", padx=20, pady=8)
-                promo.bind("<Button-1>", lambda _e: safe_open_url(PROMO_URL))
-                dlg.geometry("420x210")
+    def open_item(self, job_id: str) -> None:
+        fp = self._files.get(job_id)
+        if not fp:
+            return
+        try:
+            subprocess.run(["explorer", f"/select,{fp}"], check=False)
+        except Exception:
+            try:
+                os.startfile(str(Path(fp).parent))  # noqa: S606
+            except OSError:
+                pass
 
-            dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
-            self.root.wait_window(dlg)
-        except tk.TclError:
+    def play_item(self, job_id: str) -> None:
+        fp = self._files.get(job_id)
+        if fp and Path(fp).exists():
+            try:
+                os.startfile(fp)  # noqa: S606
+            except OSError:
+                pass
+
+    def open_url(self, url: str) -> None:
+        safe_open_url(url)
+
+    def win_minimize(self) -> None:
+        try:
+            self.window.minimize()
+        except Exception:
             pass
 
-    def _fetch_promo_image(self) -> None:
-        # 다운로드/디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임.
+    def win_maximize(self) -> None:
         try:
-            req = urllib.request.Request(
-                PROMO_IMAGE_URL, headers={"User-Agent": HTTP_UA})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read(5_000_000)
-            img = Image.open(io.BytesIO(data)).convert("RGB")
-            img.thumbnail((PROMO_IMAGE_MAXW, PROMO_IMAGE_MAXH))   # 비율 유지로 박스 안에
-        except Exception as e:
-            log.info("promo image fetch failed: %s", e)
-            return
-        self.root.after(0, self._apply_promo_image, img)
+            if self._maxed:
+                self.window.restore()
+            else:
+                self.window.maximize()
+            self._maxed = not self._maxed
+        except Exception:
+            pass
 
-    def _apply_promo_image(self, img: object) -> None:
+    def win_close(self) -> None:
+        # 종료 시 광고 1회 노출 → JS 가 exit_confirmed 로 실제 종료
+        self._js("showExit()")
+
+    def exit_confirmed(self) -> None:
         try:
-            photo = ImageTk.PhotoImage(img)   # 메인 스레드에서 생성
-        except Exception as e:
-            log.info("promo image render failed: %s", e)
-            return
-        self._promo_photo = photo   # 참조 유지 (GC 방지)
-        self.promo_lbl.configure(image=photo, text="")
+            self.window.destroy()
+        except Exception:
+            pass
 
-    def _fetch_exit_promo_image(self) -> None:
-        # 종료 시 크게 띄울 배너를 미리 받아둔다(종료가 안 끊기게).
-        try:
-            req = urllib.request.Request(
-                PROMO_EXIT_IMAGE_URL, headers={"User-Agent": HTTP_UA})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read(8_000_000)
-            img = Image.open(io.BytesIO(data)).convert("RGB")
-            img.thumbnail((PROMO_EXIT_MAXW, PROMO_EXIT_MAXH))
-        except Exception as e:
-            log.info("exit promo image fetch failed: %s", e)
-            return
-        self.root.after(0, self._apply_exit_promo_image, img)
-
-    def _apply_exit_promo_image(self, img: object) -> None:
-        try:
-            self._exit_promo_photo = ImageTk.PhotoImage(img)   # 메인 스레드 생성
-        except Exception as e:
-            log.info("exit promo render failed: %s", e)
-
-    def _enforce_sticky_kill(self) -> bool:
-        """이전에 받은 원격 정지(killswitch)가 있으면 강제 종료한다(오프라인 포함).
-        온라인이면 재확인해 정지가 해제됐으면 통과시키고, 확인 불가(오프라인)면
-        마지막 상태(정지)를 유지한다. 정지면 True 를 반환한다."""
-        if not self._cfg.get("killed"):
-            return False
-        decision = self.updater.fetch_decision()   # None = 오프라인/미설정
-        if decision is not None and decision.kind != "killswitch":
-            # 원격에서 정지 해제됨 → 끈끈한 정지 플래그 제거하고 정상 실행
-            self._cfg["killed"] = False
-            self._cfg["killed_message"] = ""
-            self._save_settings()
-            return False
-        if decision is not None and decision.kind == "killswitch":
-            self._cfg["killed_message"] = decision.message
-            self._save_settings()
-        msg = self._cfg.get("killed_message") or "현재 사용이 중단되었습니다."
-        messagebox.showerror(APP_TITLE, msg)
-        return True
+    # ---------------- 다운로더 콜백 (다운로드 스레드 → JS) ----------------
 
     def _on_progress(self, d: dict) -> None:
-        """yt-dlp progress hook. 모든 갱신은 UI 스레드(root.after)로 위임."""
-        info = d.get("info_dict") or {}
-        vid = str(info.get("id") or "")
-        if not vid:
+        if self._cur_id is None:
             return
         status = d.get("status")
-
         if status == "downloading":
-            title = str(info.get("title") or "")
-            thumb_url = str(info.get("thumbnail") or "")
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             done = d.get("downloaded_bytes", 0)
             speed = d.get("speed") or 0
             pct = (done / total * 100) if total else 0
-            self.root.after(
-                0, self._update_history_progress,
-                vid, title, thumb_url, pct, done, total, speed,
+            self._js(
+                f"dlProgress('{self._cur_id}',{{pct:{pct:.1f},"
+                f"done:{done / 1048576:.2f},total:{total / 1048576:.2f},"
+                f"speed:{(speed or 0) / 1048576:.2f}}})"
             )
         elif status == "finished":
-            fname = d.get("filename", "")
-            self.root.after(0, self._update_history_merging, vid, fname)
+            self._js(f"dlMerging('{self._cur_id}')")
 
     def _on_item_done(self, vid: str, filepath: str | None = None) -> None:
-        """항목(영상) 1개의 후처리 단계가 끝날 때마다 호출된다.
-
-        후처리가 진행되며 최종 경로가 바뀔 수 있어(예: 음성 .webm→.mp3) 매번
-        file_path 를 최신으로 갱신하고 표시를 새로고침한다."""
-        if not vid:
-            return
-        widget = self.history_widgets.get(vid)
-        if not widget:
+        if self._cur_id is None:
             return
         if filepath:
-            widget.file_path = filepath        # 마지막 후처리 경로가 최종 파일
-        self.completed_dl_vids.add(vid)
-        widget.set_done()                      # 최종 경로/크기 반영 (반복 호출 안전)
+            self._cur_filepath = filepath
+        self._files[self._cur_id] = self._cur_filepath or ""
+        size = ""
+        try:
+            if self._cur_filepath:
+                size = f"{Path(self._cur_filepath).stat().st_size / 1048576:.1f} MB"
+        except OSError:
+            pass
+        fname = Path(self._cur_filepath).name if self._cur_filepath else ""
+        self._js(f"dlDone('{self._cur_id}',{json.dumps({'size': size, 'file': fname})})")
 
     def _on_done(self, ok: bool, err: str | None) -> None:
-        """다운로드(전체 작업) 종료 콜백.
-
-        성공 항목은 대부분 postprocessor hook(_on_item_done)에서 이미
-        개별 완료 처리됐다. 여기서는 후처리 hook이 발생하지 않은 경우
-        (예: 재인코딩/병합이 필요 없는 단일 스트림)를 대비해, 아직
-        완료 처리되지 않은 항목들을 마저 완료 처리하는 안전망 역할을 한다.
-        실패 시에는 마지막 진행 항목에 오류를 표시한다."""
+        jid = self._cur_id
         self.is_downloading = False
-        self.cancel_btn.pack_forget()
+        if jid is not None:
+            if not ok and err == DOWNLOAD_CANCELLED:
+                self._js(f"dlCancelled('{jid}')")
+            elif not ok:
+                msg = (err or "실패").splitlines()[-1][:120]
+                self._js(f"dlError('{jid}',{json.dumps(msg)})")
+        self._cur_id = None
+        self._js("dlFinished()")
 
-        cancelled = (err == DOWNLOAD_CANCELLED)
-        if ok:
-            # hook으로 누락된 항목까지 일괄 완료 처리 (단일/다중 모두 안전).
-            for vid, widget in self.history_widgets.items():
-                if vid not in self.completed_dl_vids:
-                    widget.set_done()
-                    self.completed_dl_vids.add(vid)
-        else:
-            vid = self.current_dl_vid
-            widget = self.history_widgets.get(vid) if vid else None
-            if widget and vid not in self.completed_dl_vids:
-                widget.set_cancelled() if cancelled else widget.set_error(err or "")
+    # ---------------- 백그라운드 (시작 후) ----------------
 
-        log.info("download done ok=%s cancelled=%s items=%d",
-                 ok, cancelled, len(self.completed_dl_vids))
-        if not ok and not cancelled:
-            messagebox.showerror(APP_TITLE, f"다운로드 실패:\n{err}")
+    def post_init(self) -> None:
+        threading.Thread(target=self._kill_and_update, daemon=True).start()
+        if self.ffmpeg_dir is None:
+            threading.Thread(target=self._install_ffmpeg, daemon=True).start()
+        threading.Thread(target=self._clip_loop, daemon=True).start()
 
-    # ---------------- 히스토리 항목 관리 ----------------
-
-    def _update_history_progress(self, vid: str, title: str, thumb_url: str,
-                                 pct: float, done: int, total: int, speed: float) -> None:
-        widget = self.history_widgets.get(vid)
-        if widget is None:
-            widget = self._add_history_item(vid, title, thumb_url)
-        elif title:
-            widget.set_title(title)
-        self.current_dl_vid = vid
-        widget.set_downloading(pct, done, total, speed)
-
-    def _update_history_merging(self, vid: str, fname: str) -> None:
-        widget = self.history_widgets.get(vid)
-        if widget:
-            widget.set_merging(fname)
-
-    def _add_history_item(self, vid: str, title: str, thumb_url: str) -> HistoryItemFrame:
-        if self.history_empty_lbl.winfo_ismapped():
-            self.history_empty_lbl.pack_forget()
-        widget = HistoryItemFrame(self.history_inner, vid, title)
-        self.history_widgets[vid] = widget
-        self.history_order.insert(0, vid)
-        self._update_count()
-        self._relayout_history()
-        if thumb_url and PIL_AVAILABLE:
-            threading.Thread(
-                target=self._fetch_thumbnail, args=(vid, thumb_url), daemon=True,
-            ).start()
-        return widget
-
-    def _relayout_history(self) -> None:
-        """history_order 의 순서대로 항목 다시 배치 (최신이 위)."""
-        for child in self.history_inner.pack_slaves():
-            if child is not self.history_empty_lbl:
-                child.pack_forget()
-        for vid in self.history_order:
-            w = self.history_widgets.get(vid)
-            if w:
-                w.pack(side="top", fill="x", padx=4, pady=4)
-
-    def _fetch_thumbnail(self, vid: str, url: str) -> None:
-        # 네트워크 + 디코딩만 스레드에서. ImageTk 생성은 메인 스레드로 위임.
-        try:
-            req = urllib.request.Request(
-                url, headers={"User-Agent": HTTP_UA})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = resp.read(2_000_000)
-            img = Image.open(io.BytesIO(data)).convert("RGB")
-            img.thumbnail((HistoryItemFrame.THUMB_W, HistoryItemFrame.THUMB_H * 3))
-        except Exception as e:
-            log.info("thumbnail fetch failed for %s: %s", vid, e)
-            return
-        self.root.after(0, self._apply_thumbnail, vid, img)
-
-    def _apply_thumbnail(self, vid: str, img: object) -> None:
-        widget = self.history_widgets.get(vid)
-        if not widget:
-            return
-        try:
-            photo = ImageTk.PhotoImage(img)   # 메인 스레드에서 생성
-        except Exception as e:
-            log.info("thumbnail render failed for %s: %s", vid, e)
-            return
-        widget.set_thumbnail(photo)
-
-    # ---------------- 업데이트 ----------------
-
-    def _check_update_async(self) -> None:
-        threading.Thread(target=self._check_update_worker, daemon=True).start()
-
-    def _check_update_worker(self) -> None:
+    def _kill_and_update(self) -> None:
         decision = self.updater.fetch_decision()
         if decision is None:
+            # 오프라인: 이전에 받은 정지가 있으면 유지
+            if self.cfg.get("killed"):
+                self._kill(self.cfg.get("killed_message") or "현재 사용이 중단되었습니다.")
             return
-        self.root.after(0, self._apply_update_decision, decision)
+        if decision.kind == "killswitch":
+            self.cfg["killed"] = True
+            self.cfg["killed_message"] = decision.message
+            self.settings.save(self.cfg)
+            self._kill(decision.message)
+        elif decision.kind == "force_update":
+            self._js(f"alert({json.dumps(decision.message + ' 업데이트가 필요합니다.')})")
+            safe_open_url(decision.download_url)
+        else:
+            if self.cfg.get("killed"):
+                self.cfg["killed"] = False
+                self.cfg["killed_message"] = ""
+                self.settings.save(self.cfg)
 
-    def _apply_update_decision(self, d: UpdateDecision) -> None:
-        self.update_decision = d
-        # 정지가 아닌 결정을 받으면 끈끈한 정지 플래그를 해제한다(원격 해제 반영).
-        if d.kind != "killswitch" and self._cfg.get("killed"):
-            self._cfg["killed"] = False
-            self._cfg["killed_message"] = ""
-            self._save_settings()
-        if d.kind == "killswitch":
-            # 끈끈하게: config 에 기록해 다음 실행부터는 오프라인이어도 정지 유지.
-            self._cfg["killed"] = True
-            self._cfg["killed_message"] = d.message
-            self._save_settings()
-            messagebox.showerror(APP_TITLE, d.message)
-            if d.download_url and messagebox.askyesno(APP_TITLE, "공지/다운로드 페이지를 열까요?"):
-                safe_open_url(d.download_url)
-            self.root.destroy()
-            return
-        if d.kind == "force_update":
-            messagebox.showwarning(APP_TITLE, d.message + "\n필수 업데이트가 필요합니다.")
-            safe_open_url(d.download_url)
-            self.root.destroy()
-            return
-        if d.kind == "new_version":
-            text = f"⬆  새 버전 v{d.latest_version} 사용 가능 — 클릭하여 다운로드"
-            if d.release_notes:
-                text += f"   ({d.release_notes})"
-            self.update_label.configure(text=text)
-            self.update_label.bind("<Button-1>", self._open_update_page)
+    def _kill(self, msg: str) -> None:
+        self._js(f"alert({json.dumps(msg)})")
+        self.exit_confirmed()
 
-    def _open_update_page(self, _event: object | None = None) -> None:
-        if self.update_decision:
-            safe_open_url(self.update_decision.download_url)
-
-    # ---------------- ffmpeg 자동 설치 ----------------
-
-    def _maybe_offer_ffmpeg(self) -> None:
-        """앱 시작 직후 1회 호출. ffmpeg 없으면 설치 안내."""
-        if self.ffmpeg_dir or self._ffmpeg_prompt_handled:
-            return
-        self._prompt_install_ffmpeg(force=False)
-
-    def _prompt_install_ffmpeg(self, *, force: bool) -> None:
-        """ffmpeg 가 없으면 자동으로 모달 띄우고 백그라운드 다운로드."""
-        if self.ffmpeg_dir:
-            return
-        self._ffmpeg_prompt_handled = True
-        dialog = FfmpegInstallDialog(self.root)
-        threading.Thread(
-            target=self._install_ffmpeg_worker, args=(dialog,), daemon=True,
-        ).start()
-
-    def _install_ffmpeg_worker(self, dialog: FfmpegInstallDialog) -> None:
+    def _install_ffmpeg(self) -> None:
         def cb(p: FfmpegProgress) -> None:
-            self.root.after(0, dialog.update_progress, p)
-            if p.stage == "done":
-                self.root.after(0, self._on_ffmpeg_installed)
+            if p.stage == "downloading":
+                self._js(f"ffmpegStatus({json.dumps('필요한 파일 받는 중… ' + p.message)},false)")
+            elif p.stage == "extracting":
+                self._js(f"ffmpegStatus({json.dumps('설치 중…')},false)")
+            elif p.stage == "done":
+                self.ffmpeg_dir = find_ffmpeg()
+                self._js("ffmpegStatus('준비 완료 · ffmpeg 설치됨',true)")
+            elif p.stage == "error":
+                self._js(f"ffmpegStatus({json.dumps('파일 설치 실패: ' + p.message)},false)")
         self.installer.install(cb)
 
-    def _on_ffmpeg_installed(self) -> None:
-        self.ffmpeg_dir = find_ffmpeg()
-        if not self.ffmpeg_dir:
-            return
-        self.ffmpeg_lbl.configure(
-            text="●  준비 완료", foreground=COLOR_SUCCESS, cursor="",
-        )
-        self.ffmpeg_lbl.unbind("<Button-1>")
-        log.info("ffmpeg auto-install complete: %s", self.ffmpeg_dir)
+    def _clip_loop(self) -> None:
+        while True:
+            time.sleep(1.2)
+            if self.is_downloading:
+                continue
+            try:
+                t = read_clipboard_text().strip()
+            except Exception:
+                continue
+            if (t and t != self._last_clip and URL_RE.match(t)
+                    and VIDEO_HOST_RE.search(t)):
+                self._last_clip = t
+                self._js(f"clipUrl({json.dumps(t)})")
 
 
 # ============================================================
@@ -1998,14 +1176,21 @@ class DownloaderApp:
 
 def main() -> None:
     log_file = setup_logging()
-    log.info("starting %s v%s, log=%s", APP_TITLE, APP_VERSION, log_file)
-    root = tk.Tk()
+    log.info("starting %s v%s (pywebview), log=%s", APP_TITLE, APP_VERSION, log_file)
+    api = Api()
+    window = webview.create_window(
+        f"{APP_TITLE}",
+        _ui_html_path(),
+        js_api=api,
+        width=760, height=624, min_size=(680, 560),
+        frameless=True, easy_drag=False,
+        background_color="#f4f5f6",
+    )
+    api.set_window(window)
     try:
-        app = DownloaderApp(root)
-        if not getattr(app, "aborted", False):
-            root.mainloop()
+        webview.start(api.post_init, gui="edgechromium")
     except Exception:
-        log.exception("fatal error in main loop")
+        log.exception("webview start failed")
         raise
 
 
