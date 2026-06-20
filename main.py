@@ -604,18 +604,18 @@ class Downloader:
         if cfg.cookies_browser:
             first["cookiesfrombrowser"] = (cfg.cookies_browser, None, None, None)
         plan.append(("기본 다운로드", first))
-        # 2) 브라우저 쿠키 (1단계에서 아직 안 썼고, 쓸 쿠키가 있을 때만)
+        # 2) 브라우저 헤더 (쿠키 없이!) — 쿠키 DB 가 잠겨도(브라우저 실행 중) 영향 없음.
+        #    쿠키 시도가 실패해도 비-쿠키 시도들은 항상 살아 있도록 분리한다.
+        plan.append(("브라우저 헤더로 재시도", {"format": fmt, "http_headers": headers}))
+        # 3) 브라우저 쿠키 (쓸 쿠키가 있고 1단계에서 안 썼을 때만)
         if cookie_opt and not cfg.cookies_browser:
             plan.append(("브라우저 쿠키로 재시도", {"format": fmt, **cookie_opt}))
-        # 3) 브라우저 헤더(Referer/Origin/UA) + 쿠키
-        plan.append(("브라우저 헤더로 재시도",
-                     {"format": fmt, "http_headers": headers, **cookie_opt}))
-        # 4) 포맷 낮춰 재시도 (영상만; 음성은 의미 없음)
+            plan.append(("쿠키+헤더로 재시도",
+                         {"format": fmt, "http_headers": headers, **cookie_opt}))
+        # 4) 포맷 낮춰 재시도 (쿠키 없이; 영상만 — 음성은 의미 없음)
         if not cfg.is_audio_only:
-            plan.append(("호환 포맷으로 재시도",
-                         {"format": "best", "http_headers": headers, **cookie_opt}))
-            plan.append(("최저 화질로 재시도",
-                         {"format": "worst", "http_headers": headers, **cookie_opt}))
+            plan.append(("호환 포맷으로 재시도", {"format": "best", "http_headers": headers}))
+            plan.append(("최저 화질로 재시도", {"format": "worst", "http_headers": headers}))
         return plan
 
     def _try_stage2(self, cfg: DownloadConfig, base: dict) -> bool:
@@ -1111,8 +1111,8 @@ class Api:
         self._last_clip = ""
         self._cur_id: str | None = None
         self._cur_filepath: str | None = None
-        self._info_pushed = False        # 다운로드 중 제목/썸네일을 한 번만 채우기
         self._files: dict[str, str] = {}
+        self._queue: list[tuple[str, str, str, str]] = []  # 대기열 (job_id,url,화질,포맷)
         self._is_downloading = False
         self._maxed = False
         self._downloader = Downloader(
@@ -1178,16 +1178,8 @@ class Api:
             "qualities": [lbl for lbl, _ in QUALITY_TABLE],
             "formats": [lbl for lbl, _ in FORMAT_TABLE],
             "promo_url": PROMO_URL,
-            "hint": "링크를 붙여넣으면 바로 다운로드가 시작됩니다. (화질·포맷은 ⚙ 설정의 기본값)",
+            "hint": "링크를 붙여넣으면 영상 정보 팝업이 뜹니다. 화질·포맷을 고르고 다운로드하세요.",
         }
-
-    def set_defaults(self, quality: str, fmt: str) -> None:
-        """설정에서 고른 기본 화질·포맷을 저장한다(붙여넣기 즉시 다운로드에 사용)."""
-        if quality:
-            self._cfg["quality"] = quality
-        if fmt:
-            self._cfg["format"] = fmt
-        self._settings.save(self._cfg)
 
     def accept_tos(self) -> None:
         self._cfg["tos_accepted"] = TOS_VERSION
@@ -1217,26 +1209,37 @@ class Api:
         }
 
     def start_download(self, job_id: str, url: str, quality: str, fmt: str) -> dict:
+        url = (url or "").strip()
+        if not URL_RE.match(url):
+            return {"ok": False, "error": "올바른 링크(http/https)가 아닙니다"}
+        is_audio = "음성만" in quality
+        if self._ffmpeg_dir is None and not is_audio:
+            return {"ok": False, "error": "ffmpeg 준비 중입니다. 잠시 후 다시 시도하세요"}
+        # 마지막 선택을 기본값으로 기억(다음 분석 팝업의 기본 화질/포맷)
+        self._cfg["quality"] = quality
+        self._cfg["format"] = fmt
+        self._settings.save(self._cfg)
+        # 이미 받는 중이면 대기열에 넣고, 현재 다운로드가 끝나면 자동 시작
         if self._is_downloading:
-            return {"ok": False, "error": "이미 다운로드가 진행 중입니다"}
+            self._queue.append((job_id, url, quality, fmt))
+            return {"ok": True, "queued": True}
+        self._begin_download(job_id, url, quality, fmt)
+        return {"ok": True}
+
+    def _begin_download(self, job_id: str, url: str, quality: str, fmt: str) -> None:
         save_dir = Path(self._cfg.get("save_dir", self._default_dir()))
         try:
             save_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            return {"ok": False, "error": f"저장 폴더를 만들 수 없습니다: {e}"}
+            self._js(f"dlError('{job_id}',{json.dumps('저장 폴더 생성 실패: ' + str(e))})")
+            self._advance_queue()
+            return
         is_audio = "음성만" in quality
-        if self._ffmpeg_dir is None and not is_audio:
-            return {"ok": False, "error": "ffmpeg 준비 중입니다. 잠시 후 다시 시도하세요"}
         height = dict(QUALITY_TABLE).get(quality)
         container = dict(FORMAT_TABLE).get(fmt, "mp4")
         fmt_str = "bestaudio/best" if is_audio else build_format_selector(height, container)
-        self._cfg["quality"] = quality
-        self._cfg["format"] = fmt
-        self._settings.save(self._cfg)
-
         self._cur_id = job_id
         self._cur_filepath = None
-        self._info_pushed = False
         self._is_downloading = True
         cfg = DownloadConfig(
             url=url, out_dir=str(save_dir), format_str=fmt_str,
@@ -1245,13 +1248,36 @@ class Api:
             # 소스 실행(개인)=True, 배포 exe=False. 사용자용 토글은 없음.
             use_playwright=ENABLE_PLAYWRIGHT,
         )
+        self._js("setBusy(true)")
         log.info("download start id=%s url=%s", job_id, url)
         threading.Thread(target=self._downloader.run, args=(cfg,), daemon=True).start()
-        return {"ok": True}
+
+    def _advance_queue(self) -> None:
+        """현재 다운로드가 끝나면 대기열의 다음 항목을 시작(없으면 유휴 상태로)."""
+        if self._queue:
+            nj = self._queue.pop(0)
+            self._begin_download(*nj)
+        else:
+            self._js("setBusy(false)")
 
     def cancel_download(self) -> None:
+        # 대기열을 비우고(대기 항목은 취소 표시) 현재 다운로드를 취소한다.
+        pending = self._queue
+        self._queue = []
+        for item in pending:
+            self._js(f"dlCancelled('{item[0]}')")
         if self._is_downloading:
             self._downloader.cancel()
+        else:
+            self._js("setBusy(false)")
+
+    def forget_item(self, job_id: str) -> None:
+        """목록에서 항목을 제거(X)할 때: 대기열이면 빼고, 진행 중이면 취소한다."""
+        self._queue = [q for q in self._queue if q[0] != job_id]
+        if self._is_downloading and self._cur_id == job_id:
+            self._downloader.cancel()
+        elif not self._is_downloading and not self._queue:
+            self._js("setBusy(false)")
 
     def pick_folder(self) -> str | None:
         try:
@@ -1338,15 +1364,6 @@ class Api:
     def _on_progress(self, d: dict) -> None:
         if self._cur_id is None:
             return
-        # 분석 없이 바로 다운로드하므로, 추출이 끝나 정보가 들어오면 제목·썸네일을
-        # 한 번 목록 항목에 채워준다 (붙여넣자마자 항목이 떠 있고 곧 채워지는 UX).
-        if not self._info_pushed:
-            info = d.get("info_dict") or {}
-            title = info.get("title")
-            if title:
-                self._info_pushed = True
-                self._js("dlInfo('%s',%s)" % (self._cur_id, json.dumps(
-                    {"title": title, "thumb": info.get("thumbnail") or ""})))
         status = d.get("status")
         if status == "downloading":
             total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -1391,7 +1408,7 @@ class Api:
                 msg = (err or "실패").splitlines()[-1][:120]
                 self._js(f"dlError('{jid}',{json.dumps(msg)})")
         self._cur_id = None
-        self._js("dlFinished()")
+        self._advance_queue()
 
     # ---------------- 백그라운드 (시작 후) ----------------
 

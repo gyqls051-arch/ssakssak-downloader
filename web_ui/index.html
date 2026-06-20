@@ -157,6 +157,15 @@
            padding:22px;cursor:default;position:relative;box-shadow:0 6px 18px rgba(27,34,48,.28)}
   .exit-ad .h{font-size:19px;font-weight:800;color:#fff;line-height:1.34;margin:14px 0 8px}
   .exit-ad .d{font-size:12.5px;color:#b9c0d2;line-height:1.5;margin-bottom:18px}
+
+  /* 분석 로딩 스피너 */
+  .spinner{width:30px;height:30px;border:3px solid #e4e7ec;border-top-color:#2950d8;
+           border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  /* 목록 항목 제거(X) 버튼 */
+  .itx{flex:none;width:24px;height:24px;border:none;background:transparent;color:#b6bcc6;
+       font-size:13px;cursor:default;border-radius:5px;align-self:center;font-family:inherit}
+  .itx:hover{background:#f0f1f4;color:#c42b1c}
 </style>
 </head>
 <body>
@@ -183,11 +192,11 @@
     <div class="card">
       <div class="lbl">영상 링크</div>
       <div class="urlrow">
-        <input id="url" type="text" placeholder="영상 주소(URL)를 붙여넣고 Enter — 바로 다운로드됩니다"
-               onkeydown="if(event.key==='Enter')quickDownload()">
-        <button class="btn-primary" onclick="pasteAnalyze()">붙여넣기 · 다운로드</button>
+        <input id="url" type="text" placeholder="영상 주소(URL)를 붙여넣으면 자동으로 팝업이 뜹니다"
+               onpaste="setTimeout(analyze,60)" onkeydown="if(event.key==='Enter')analyze()">
+        <button class="btn-primary" onclick="pasteAnalyze()">붙여넣기 · 분석</button>
       </div>
-      <div class="hint" id="urlHint">링크를 붙여넣으면 바로 다운로드가 시작됩니다. (화질·포맷은 ⚙ 설정의 기본값)</div>
+      <div class="hint" id="urlHint">링크를 붙여넣으면 영상 정보 팝업이 뜹니다. 화질·포맷을 고르고 다운로드하세요.</div>
     </div>
 
     <div class="card listcard">
@@ -233,12 +242,40 @@
           <button class="btn-sec" style="height:34px;flex:none;white-space:nowrap;padding:0 18px" onclick="openFolder()">열기</button>
         </div>
       </div>
-      <div class="grid2" style="margin-top:15px">
-        <div class="field"><span class="lbl">기본 화질</span><select id="sQuality" onchange="saveDefaults()"></select></div>
-        <div class="field"><span class="lbl">포맷</span><select id="sFormat" onchange="saveDefaults()"></select></div>
-      </div>
       <div style="margin-top:18px;padding-top:15px;border-top:1px solid #eef0f2;display:flex">
         <button class="btn-primary" style="margin-left:auto;padding:0 22px" onclick="closeSettings()">완료</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Analyze / download popup -->
+<div class="overlay" id="ovAnalyze" onclick="if(event.target===this)closeAnalyze()">
+  <div class="modal">
+    <div class="mhead"><span class="mt">영상 다운로드</span><button class="mclose" onclick="closeAnalyze()">✕</button></div>
+    <div class="mbody">
+      <div id="aLoading" style="display:flex;flex-direction:column;align-items:center;gap:13px;padding:34px 0">
+        <div class="spinner"></div>
+        <div style="font-size:12.5px;color:#8b919b">영상 정보 분석 중…</div>
+      </div>
+      <div id="aErr" style="display:none;padding:18px 4px;font-size:12.5px;color:#c42b1c;line-height:1.55"></div>
+      <div id="aContent" style="display:none">
+        <div class="vinfo">
+          <div class="vthumb" id="aThumb"><span class="play" style="width:36px;height:36px;font-size:13px">▶</span></div>
+          <div style="flex:1;min-width:0">
+            <div class="vtitle" id="aTitle"></div>
+            <div class="vmeta" id="aMeta"></div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="field"><span class="lbl">화질</span><select id="aQuality"></select></div>
+          <div class="field"><span class="lbl">포맷</span><select id="aFormat"></select></div>
+        </div>
+        <div class="mfoot">
+          <span class="savepath" id="aSave"></span>
+          <button class="btn-sec" onclick="closeAnalyze()">취소</button>
+          <button class="btn-primary" style="height:36px;padding:0 20px;font-size:13px" onclick="startDownload()">다운로드</button>
+        </div>
       </div>
     </div>
   </div>
@@ -301,8 +338,6 @@ async function boot(){
   $('appTitle').textContent = INIT.app_title;
   $('appVer').textContent = 'v' + INIT.version;
   setStatus(INIT.ffmpeg_ok);
-  fillSelect('sQuality', INIT.qualities, INIT.quality);
-  fillSelect('sFormat', INIT.formats, INIT.format);
   $('sSave').value = INIT.save_dir;
   if (!INIT.tos_accepted) $('ovTos').classList.add('on');
   document.title = INIT.app_title || '싹싹김치 다운로드';
@@ -338,35 +373,56 @@ async function acceptTos(){
 /* ---- settings ---- */
 function openSettings(){ $('sSave').value = INIT.save_dir; $('ovSettings').classList.add('on'); }
 function closeSettings(){ $('ovSettings').classList.remove('on'); }
-function saveDefaults(){ INIT.quality=$('sQuality').value; INIT.format=$('sFormat').value; api().set_defaults(INIT.quality, INIT.format); }
 async function pickFolder(){ const d = await api().pick_folder(); if(d){ INIT.save_dir=d; $('sSave').value=d; } }
 function openFolder(){ api().open_folder(); }
 function openPromo(){ api().open_url(INIT.promo_url); }
+function setHint(t, err){ const h=$('urlHint'); h.textContent=t; h.className='hint'+(err?' err':''); }
 
-/* ---- 붙여넣기 → 바로 다운로드 (분석 팝업 없이 · 설정의 기본 화질/포맷 자동) ---- */
+/* ---- 붙여넣기 → 영상 정보 팝업 (4K Downloader 식) ---- */
 async function pasteAnalyze(){
   const t = await api().read_clipboard();
   if(t) $('url').value = t;
-  quickDownload();
+  analyze();
 }
-async function quickDownload(){
+let analyzeSeq = 0;
+async function analyze(){
   const url = $('url').value.trim();
-  if(!url){ return; }
-  const id = 'd' + Date.now();
-  addItem(id, '준비 중…', '');          // 즉시 항목 표시 (제목·썸네일은 곧 채워짐)
-  $('url').value = '';
-  setHint(INIT.hint, false);
-  const r = await api().start_download(id, url, INIT.quality, INIT.format);
-  if(!r.ok){ dlError(id, r.error || '시작 실패'); return; }
-  $('cancelBtn').style.display = 'block';
+  if(!url) return;
+  const seq = ++analyzeSeq;
+  openAnalyze(); showAnalyzeLoading();              // 팝업 즉시 + 로딩 스피너
+  const r = await api().analyze(url);
+  if(seq !== analyzeSeq || !$('ovAnalyze').classList.contains('on')) return;  // 더 새 요청/닫힘
+  if(!r.ok){ showAnalyzeError('영상 정보를 가져오지 못했습니다: ' + (r.error||'')); return; }
+  lastAnalyze = r;
+  fillAnalyze(r);
 }
-function setHint(t, err){ const h=$('urlHint'); h.textContent=t; h.className='hint'+(err?' err':''); }
+function openAnalyze(){ $('ovAnalyze').classList.add('on'); }
+function closeAnalyze(){ $('ovAnalyze').classList.remove('on'); }
+function showAnalyzeLoading(){ $('aLoading').style.display='flex'; $('aErr').style.display='none'; $('aContent').style.display='none'; }
+function showAnalyzeError(m){ $('aLoading').style.display='none'; $('aContent').style.display='none'; $('aErr').style.display='block'; $('aErr').textContent='⚠ '+m; }
+function fillAnalyze(r){
+  $('aLoading').style.display='none'; $('aErr').style.display='none'; $('aContent').style.display='block';
+  $('aTitle').textContent = r.title;
+  $('aMeta').textContent = r.meta;
+  fillSelect('aQuality', r.qualities, r.quality);
+  fillSelect('aFormat', INIT.formats, INIT.format);
+  $('aSave').textContent = '저장: ' + r.save_short;
+  const th = $('aThumb');
+  th.innerHTML = r.thumbnail ? '' : '<span class="play" style="width:36px;height:36px;font-size:13px">▶</span>';
+  if(r.thumbnail){ const im=new Image(); im.src=r.thumbnail; im.onerror=()=>{th.innerHTML='<span class="play" style="width:36px;height:36px;font-size:13px">▶</span>';}; th.appendChild(im); }
+}
 
-/* 다운로드 추출 중 제목·썸네일을 항목에 채움 (Python → JS) */
-function dlInfo(id, info){
-  const el = items[id]; if(!el) return;
-  if(info.title){ const t=el.querySelector('.it-title'); if(t) t.textContent=info.title; }
-  if(info.thumb){ const th=el.querySelector('.thumb'); if(th){ th.innerHTML='<img src="'+info.thumb+'" onerror="this.style.display=\'none\'">'; } }
+/* ---- 다운로드 시작 (팝업의 '다운로드' 버튼) ---- */
+async function startDownload(){
+  if(!lastAnalyze) return;
+  const a = lastAnalyze;
+  const id = 'd' + Date.now();
+  const q = $('aQuality').value, f = $('aFormat').value;
+  const r = await api().start_download(id, a.url, q, f);
+  if(!r.ok){ showAnalyzeError(r.error || '시작 실패'); return; }
+  closeAnalyze();
+  addItem(id, a.title, a.thumbnail);           // 받는 중이면 대기열 → '대기 중…'
+  $('url').value = ''; lastAnalyze = null;      // 다음 URL 바로 받도록 재무장
 }
 function cancelDownload(){ api().cancel_download(); $('cancelBtn').textContent='취소 중…'; $('cancelBtn').style.color='#9298a2'; }
 
@@ -379,10 +435,17 @@ function addItem(id, title, thumb){
     '<div class="thumb">' + (thumb ? '<img src="'+thumb+'" onerror="this.style.display=\'none\'">' : '<span class="play">▶</span>') + '</div>' +
     '<div class="it-mid"><div class="it-title">'+escapeHtml(title)+'</div>' +
     '<div class="bar"><div></div></div><div class="it-meta">대기 중…</div></div>' +
-    '<div class="it-pct">0%</div>';
+    '<div class="it-pct">0%</div>' +
+    '<button class="itx" title="목록에서 제거" onclick="removeItem(\''+id+'\')">✕</button>';
   $('items').prepend(el);
   items[id] = el;
   bumpCount();
+}
+function removeItem(id){
+  const el = items[id]; if(!el) return;
+  el.remove(); delete items[id]; bumpCount();
+  if(Object.keys(items).length === 0) $('empty').style.display = 'flex';
+  try{ api().forget_item(id); }catch(e){}
 }
 function bumpCount(){ $('count').textContent = Object.keys(items).length + '개'; }
 function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -418,7 +481,7 @@ function dlDone(id, info){
     acts.className = 'it-acts';
     acts.innerHTML = '<button class="sbtn" onclick="api().open_item(\''+id+'\')">폴더 열기</button>'+
                      '<button class="sbtn blue" onclick="api().play_item(\''+id+'\')">재생</button>';
-    el.appendChild(acts);
+    el.insertBefore(acts, el.querySelector('.itx'));   // X 버튼은 항상 맨 끝 유지
   }
 }
 function ffmpegStatus(text, ok){
@@ -440,12 +503,13 @@ function dlCancelled(id){
   const meta = el.querySelector('.it-meta');
   meta.className = 'it-meta'; meta.textContent = '■ 취소됨';
 }
-function dlFinished(){ $('cancelBtn').style.display='none'; $('cancelBtn').textContent='■ 취소'; $('cancelBtn').style.color='#c42b1c'; }
+/* 다운로드 진행 중(또는 대기열 남음) 여부 → 취소 버튼 표시 (Python → JS) */
+function setBusy(on){ $('cancelBtn').style.display = on ? 'block' : 'none'; if(!on){ $('cancelBtn').textContent='■ 취소'; $('cancelBtn').style.color='#c42b1c'; } }
 function showExit(){ $('ovExit').classList.add('on'); }
 function closeExit(){ api().exit_confirmed(); }
 
-/* 클립보드 자동 감지: 링크 칸만 채워준다(실수 다운로드 방지 — 버튼/Enter 로 시작) */
-function clipUrl(u){ if($('url').value) return; $('url').value=u; setHint('링크가 채워졌습니다. Enter 또는 [붙여넣기·다운로드]', false); }
+/* 클립보드 자동 감지: 새 링크를 잡으면 자동으로 팝업을 띄운다 (팝업 떠있으면 무시) */
+function clipUrl(u){ if($('ovAnalyze').classList.contains('on')) return; $('url').value=u; analyze(); }
 </script>
 </body>
 </html>
