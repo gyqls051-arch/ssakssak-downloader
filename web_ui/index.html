@@ -219,22 +219,24 @@
   .exit-ad .cta{display:inline-flex;align-items:center;height:38px;padding:0 20px;border-radius:999px;
        background:linear-gradient(150deg,#ff8a4c,#ff5a2e);color:#fff;font-size:13px;font-weight:700}
 
-  /* 하단 OFFCUT 띠배너 (메인 화면) */
-  .adbar{position:relative;display:flex;align-items:center;gap:13px;margin:0 12px 10px;padding:10px 15px;
-         border-radius:8px;background:linear-gradient(108deg,#1b2230,#28324c 58%,#3a4470);cursor:default;flex:none;
-         box-shadow:0 2px 8px rgba(27,34,48,.18)}
+  /* 하단 OFFCUT 띠배너 (메인 화면) — web_ui/banner.png 있으면 그 이미지로 꽉 채움.
+     표시 크기 840×100 (창 폭에 맞춰 가변). 사용자 디자인 배너 권장 1680×200(2배). */
+  .adbar{position:relative;overflow:hidden;display:flex;align-items:center;gap:14px;margin:0 10px 10px;
+         padding:0 20px;height:100px;border-radius:8px;cursor:default;flex:none;
+         background:linear-gradient(108deg,#1b2230,#28324c 58%,#3a4470);box-shadow:0 2px 8px rgba(27,34,48,.18)}
   .adbar:hover{filter:brightness(1.06)}
-  .adtag{position:absolute;top:6px;right:8px;font-size:8px;font-weight:800;letter-spacing:.1em;
+  .ad-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:2}  /* 사용자 디자인 배너 */
+  .adtag{position:absolute;top:7px;right:9px;z-index:3;font-size:8px;font-weight:800;letter-spacing:.1em;
          color:rgba(255,255,255,.4);border:1px solid rgba(255,255,255,.22);border-radius:3px;padding:0 4px}
-  .ad-o{flex:none;width:38px;height:38px;border-radius:9px;background:linear-gradient(150deg,#ff8a4c,#ff5a2e);
-        display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:900;
+  .ad-o{flex:none;width:46px;height:46px;border-radius:10px;background:linear-gradient(150deg,#ff8a4c,#ff5a2e);
+        display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:900;
         box-shadow:0 3px 10px rgba(255,90,46,.4)}
   .ad-txt{flex:1;min-width:0}
-  .ad-t1{font-size:12.5px;font-weight:800;color:#fff;letter-spacing:.03em;display:flex;align-items:center;gap:7px}
-  .ad-pill{font-size:9px;font-weight:700;color:#ffb892;background:rgba(255,122,69,.16);border-radius:3px;padding:1px 5px}
-  .ad-t2{font-size:11.5px;color:#cdd3e2;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .ad-cta{flex:none;display:inline-flex;align-items:center;height:30px;padding:0 14px;border-radius:999px;
-          background:linear-gradient(150deg,#ff8a4c,#ff5a2e);color:#fff;font-size:12px;font-weight:700;
+  .ad-t1{font-size:14px;font-weight:800;color:#fff;letter-spacing:.03em;display:flex;align-items:center;gap:7px}
+  .ad-pill{font-size:9.5px;font-weight:700;color:#ffb892;background:rgba(255,122,69,.16);border-radius:3px;padding:1px 6px}
+  .ad-t2{font-size:12.5px;color:#cdd3e2;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ad-cta{flex:none;display:inline-flex;align-items:center;height:34px;padding:0 16px;border-radius:999px;
+          background:linear-gradient(150deg,#ff8a4c,#ff5a2e);color:#fff;font-size:13px;font-weight:700;
           box-shadow:0 3px 10px rgba(255,90,46,.32)}
 
   /* 토스트 */
@@ -294,8 +296,9 @@
   <!-- 목록 -->
   <div class="list" id="list"></div>
 
-  <!-- 하단 OFFCUT 띠배너 (목업) -->
+  <!-- 하단 OFFCUT 띠배너 — web_ui/banner.png 넣으면 자동으로 그 이미지로 교체됨 -->
   <div class="adbar" onclick="openPromo()">
+    <img class="ad-img" src="banner.png" alt="" onerror="this.remove()">
     <span class="adtag">AD</span>
     <div class="ad-o">O</div>
     <div class="ad-txt">
