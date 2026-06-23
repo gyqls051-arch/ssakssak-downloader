@@ -473,7 +473,6 @@ async function smartDownload(url){
   let r;
   try { r = await api().analyze(url); } finally { setPasteLoading(false); }
   if(!r || !r.ok){ toast('분석 실패: ' + ((r && r.error) || '')); return; }
-  S.saveDir = unShort(r.save_short) || S.saveDir;
   const q = smartQuality(r), f = S.init.format || (S.init.formats && S.init.formats[0]);
   const id = 'd' + Date.now();
   const res = await api().start_download(id, r.url, q, f);
@@ -497,14 +496,11 @@ async function analyzeInModal(url){
   if(seq !== analyzeSeq || !$('ovPaste').classList.contains('on')) return; // 더 새 요청/닫힘
   if(!r.ok){ showModalError('영상 정보를 가져오지 못했습니다: ' + (r.error||'')); return; }
   S.analyze = r;
-  S.saveDir = unShort(r.save_short) || S.saveDir;
   S.modalTab = 'video';
   S.modalFormat = S.init.format || (S.init.formats && S.init.formats[0]);
   S.modalQuality = r.quality;
   fillModal(r);
 }
-// save_short 는 표시용 축약 경로라 실제 경로로 못 쓴다 → 비어있을 때만 폴백.
-function unShort(s){ return (s && s.indexOf('…') === -1) ? s : ''; }
 
 /* ── 분석 모달 ── */
 function openPaste(){ $('ovPaste').classList.add('on'); }
@@ -518,10 +514,15 @@ function fillModal(r){
   $('mMeta').textContent = r.meta || '';
   $('mSave').textContent = '저장: ' + (r.save_short || S.saveDir || '');
   const th = $('mThumb');
-  th.innerHTML = '<div class="vplay"><svg width="18" height="18" viewBox="0 0 24 24" fill="#15171A"><path d="M8 5.5v13l11-6.5z"/></svg></div>';
+  const PLAY = '<div class="vplay"><svg width="18" height="18" viewBox="0 0 24 24" fill="#15171A"><path d="M8 5.5v13l11-6.5z"/></svg></div>';
   if(r.thumbnail){
-    const im = new Image(); im.src = r.thumbnail;
-    im.onload = () => { th.innerHTML=''; th.appendChild(im); };
+    th.innerHTML = '';
+    const im = document.createElement('img');
+    im.onerror = () => { th.innerHTML = PLAY; };  // 핫링크 차단(IG/TikTok 등) 시 ▶ 자리표시자로 폴백
+    im.src = r.thumbnail;
+    th.appendChild(im);                           // 즉시 부착 → 로딩되는 대로 표시(목록 썸네일과 동일 방식)
+  } else {
+    th.innerHTML = PLAY;
   }
   renderPicker();
 }
@@ -646,26 +647,29 @@ function visible(j){
 }
 
 /* ── 렌더 ── */
+// 목록 집계 한 곳에서 (renderFilters·renderStatus 공용)
+function tally(){
+  let active = 0, downloading = 0, speed = 0, done = 0;
+  for(const id of S.order){
+    const j = S.jobs[id];
+    if(j.status === 'done') done++;
+    else if(isActive(j)){ active++; if(j.status === 'downloading'){ downloading++; speed += (j.speed||0); } }
+  }
+  return { all: S.order.length, active, done, downloading, speed };
+}
 function renderFilters(){
-  const all = S.order.length;
-  let active = 0, done = 0;
-  S.order.forEach(id => { const j = S.jobs[id]; if(j.status==='done') done++; else if(isActive(j)) active++; });
-  $('cAll').textContent = all; $('cActive').textContent = active; $('cDone').textContent = done;
+  const t = tally();
+  $('cAll').textContent = t.all; $('cActive').textContent = t.active; $('cDone').textContent = t.done;
   $('ftAll').className = 'ft' + (S.filter==='all'?' on':'');
   $('ftActive').className = 'ft' + (S.filter==='active'?' on':'');
   $('ftDone').className = 'ft' + (S.filter==='done'?' on':'');
 }
 function renderStatus(){
   $('stPath').textContent = S.ffmpegMsg || S.saveDir || '';
-  let active = 0, downloading = 0, speed = 0, done = 0;
-  S.order.forEach(id => {
-    const j = S.jobs[id];
-    if(j.status==='done') done++;
-    else if(isActive(j)){ active++; if(j.status==='downloading'){ downloading++; speed += (j.speed||0); } }
-  });
+  const t = tally();
   let summary = '';
-  if(active > 0) summary = downloading > 0 ? `${speed.toFixed(1)} MB/s · ${active}개 진행 중` : `${active}개 대기 중`;
-  else if(done > 0) summary = '모든 다운로드 완료';
+  if(t.active > 0) summary = t.downloading > 0 ? `${t.speed.toFixed(1)} MB/s · ${t.active}개 진행 중` : `${t.active}개 대기 중`;
+  else if(t.done > 0) summary = '모든 다운로드 완료';
   $('stSummary').textContent = summary;
 }
 function renderList(){
@@ -748,7 +752,7 @@ function rowHTML(j){
 function rowEl(id){ return $('list').querySelector(`.row[data-id="${id}"]`); }
 
 /* ── Python → JS 콜백 ── */
-function setBusy(on){ S.busy = !!on; }   // 상태 요약은 작업 상태로부터 계산하므로 시각효과 불필요
+function setBusy(){ /* 진행 요약은 작업 목록(tally)에서 계산하므로 별도 처리 불필요 */ }
 
 function dlProgress(id, p){
   const j = S.jobs[id]; if(!j) return;
