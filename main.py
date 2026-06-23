@@ -39,8 +39,8 @@ import yt_dlp
 #  메타데이터 / 설정
 # ============================================================
 
-APP_TITLE = "싹싹김치 다운로드"
-APP_VERSION = "1.4"
+APP_TITLE = "싹싹김치 비디오 다운로더"
+APP_VERSION = "1.5"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -1167,7 +1167,7 @@ class Api:
             "qualities": [lbl for lbl, _ in QUALITY_TABLE],
             "formats": [lbl for lbl, _ in FORMAT_TABLE],
             "promo_url": PROMO_URL,
-            "hint": "링크를 붙여넣으면 영상 정보 팝업이 뜹니다. 화질·포맷을 고르고 다운로드하세요.",
+            "hint": "영상 주소를 복사한 뒤 '링크 붙여넣기'를 누르면 화질·포맷 선택 팝업이 뜹니다.",
         }
 
     def accept_tos(self) -> None:
@@ -1434,9 +1434,9 @@ def main() -> None:
         f"{APP_TITLE}",
         _ui_html_path(),
         js_api=api,
-        width=760, height=624, min_size=(680, 560),
+        width=860, height=600, min_size=(720, 520),
         frameless=True, easy_drag=False,
-        background_color="#f4f5f6",
+        background_color="#ffffff",
     )
     api.set_window(window)
     try:

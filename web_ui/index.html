@@ -3,512 +3,787 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>싹싹김치 다운로드</title>
+<title>싹싹김치 비디오 다운로더</title>
 <style>
+  /* ===== 디자인 토큰 (싹싹김치 화이트톤 + 오렌지 액센트) =====
+     claude.ai/design '싹싹김치 화이트톤 UI' 시안을 pywebview(Edge Chromium)에서
+     그대로 동작하도록 순수 HTML/CSS/JS 로 재구현한 것. */
+  :root{
+    --accent:#fe780b;          /* 프라이머리(오렌지) */
+    --accent-soft:#FFF1E5;     /* 선택/배경 약하게 */
+    --ink:#1B1B1B; --ink2:#22262B; --ink3:#3A3A3C;
+    --muted:#7C7C80; --muted2:#8A8A8E; --muted3:#9298A0;
+    --green:#1F9E55; --danger:#C42B1C;
+  }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
-  body{font-family:'Segoe UI Variable','Segoe UI',-apple-system,'Malgun Gothic',
-       'Apple SD Gothic Neo',sans-serif;color:#1d2129;background:#f4f5f6;
+  body{font-family:"Segoe UI Variable Text","Segoe UI","Malgun Gothic","맑은 고딕",
+       -apple-system,"Apple SD Gothic Neo",system-ui,sans-serif;
+       font-size:13px;color:var(--ink);background:#fff;
        -webkit-font-smoothing:antialiased;user-select:none;overflow:hidden}
-  ::selection{background:rgba(41,80,216,.16)}
-  .app{display:flex;flex-direction:column;height:100vh;background:#f4f5f6}
-
-  /* Title bar (frameless, draggable) */
-  .titlebar{height:40px;display:flex;align-items:center;padding-left:13px;
-            background:#f4f5f6;border-bottom:1px solid #e7e8ec;flex:none}
-  .logo{width:18px;height:18px;border-radius:5px;
-        background:linear-gradient(150deg,#3a63ea,#1f3bb0);display:flex;
-        align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:800}
-  .title{margin-left:10px;font-size:12.5px;font-weight:600;color:#2b3038}
-  .ver{margin-left:9px;font-size:11.5px;color:#a2a8b2}
-  .caps{margin-left:auto;display:flex;height:40px}
-  .cap{width:46px;display:flex;align-items:center;justify-content:center;cursor:default;
-       -webkit-app-region:no-drag}
-  .cap:hover{background:rgba(0,0,0,.05)}
-  .cap.close:hover{background:#c42b1c}
-  .cap.close:hover .x{color:#fff}
-  .gear{width:44px;display:flex;align-items:center;justify-content:center;cursor:default;
-        -webkit-app-region:no-drag}
-  .gear:hover{background:rgba(0,0,0,.05)}
-  .gear:hover svg{stroke:#2950d8}
-
-  /* Content */
-  .content{flex:1;min-height:0;padding:16px;display:flex;flex-direction:column;gap:11px}
-  .card{background:#fcfcfd;border:1px solid #e7e8ec;border-radius:7px;padding:13px 14px}
-  .lbl{font-size:11px;font-weight:700;color:#8a919c;letter-spacing:.05em}
-
-  .urlrow{display:flex;gap:7px;align-items:center;margin-top:9px}
-  .urlrow input{flex:1;height:34px;border:1px solid #d3d6dc;border-bottom:1px solid #9499a2;
-       border-radius:4px;padding:0 11px 1px;font-size:13px;font-family:inherit;color:#1d2129;
-       outline:none;background:#fff;user-select:text}
-  .urlrow input:focus{border-bottom:2px solid #2950d8;padding-bottom:0}
-  .btn-primary{height:34px;padding:0 16px;border-radius:4px;border:1px solid #2342c4;
-       background:linear-gradient(155deg,#3a63ea,#2342c4);color:#fff;font-size:12.5px;
-       font-weight:600;font-family:inherit;cursor:default;white-space:nowrap;
-       box-shadow:0 1px 2px rgba(35,66,196,.26)}
-  .btn-primary:hover{filter:brightness(1.06)} .btn-primary:active{filter:brightness(.96)}
-  .hint{margin-top:9px;font-size:11.5px;color:#9298a2;line-height:1.5}
-  .hint.err{color:#c42b1c}
-
-  .listcard{flex:1;min-height:0;display:flex;flex-direction:column}
-  .listhead{display:flex;align-items:center;gap:8px;margin-bottom:11px}
-  .badge{font-size:10px;font-weight:700;color:#6a7079;background:#edeef1;padding:1px 7px;
-         border-radius:999px}
-  .cancel{margin-left:auto;font-size:11.5px;font-weight:700;color:#c42b1c;cursor:default;display:none}
-  .cancel:hover{text-decoration:underline}
-  .items{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:7px;padding-right:2px}
-  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
-         gap:8px;color:#a2a8b2;padding:30px 0}
-  .empty .e{font-size:12.5px;color:#9298a2}
-
-  .item{display:flex;align-items:center;gap:11px;padding:9px 10px;border:1px solid #edeef1;
-        border-radius:5px;background:#fff}
-  .thumb{position:relative;width:88px;height:49px;border-radius:4px;flex:none;overflow:hidden;
-         background:linear-gradient(135deg,#dde3ec,#c6cdda);display:flex;align-items:center;justify-content:center}
-  .thumb img{width:100%;height:100%;object-fit:cover}
-  .thumb .play{position:absolute;width:24px;height:24px;border-radius:50%;
-       background:rgba(255,255,255,.9);display:flex;align-items:center;justify-content:center;
-       color:#39414f;font-size:9px}
-  .it-mid{flex:1;min-width:0}
-  .it-title{font-size:13px;font-weight:600;color:#1d2129;white-space:nowrap;overflow:hidden;
-            text-overflow:ellipsis;margin-bottom:5px}
-  .bar{height:5px;border-radius:999px;background:#e9eaee;overflow:hidden;margin-bottom:5px}
-  .bar > div{height:100%;border-radius:999px;background:linear-gradient(90deg,#3a63ea,#2342c4);
-             width:0;transition:width .35s ease}
-  .it-meta{font-size:11.5px;color:#8b919b}
-  .it-meta.done{color:#1a7f37;font-weight:600}
-  .it-meta.err{color:#c42b1c;font-weight:600}
-  .it-pct{font-size:13px;font-weight:700;color:#2950d8;flex:none;min-width:40px;text-align:right}
-  .it-acts{display:flex;gap:6px;flex:none}
-  .sbtn{height:30px;padding:0 11px;border-radius:4px;border:1px solid #d3d6dc;background:#fcfcfd;
-        color:#2b3038;font-size:11.5px;font-weight:600;font-family:inherit;cursor:default}
-  .sbtn:hover{background:#f1f2f4} .sbtn.blue{color:#2950d8;font-weight:700}
-
-  /* Ad banner (mock) */
-  .ad{position:relative;display:flex;align-items:center;gap:15px;padding:14px 18px;border-radius:7px;
-      background:linear-gradient(108deg,#1b2230 0%,#28324c 58%,#3a4470 100%);cursor:default;
-      box-shadow:0 2px 8px rgba(27,34,48,.22)}
-  .ad:hover{filter:brightness(1.05)}
-  .ad .tag{position:absolute;top:7px;right:9px;font-size:8.5px;font-weight:800;letter-spacing:.1em;
-       color:rgba(255,255,255,.42);border:1px solid rgba(255,255,255,.22);border-radius:3px;padding:0 4px}
-  .ad .o{width:42px;height:42px;border-radius:10px;background:linear-gradient(150deg,#ff8a4c,#ff5a2e);
-       display:flex;align-items:center;justify-content:center;flex:none;color:#fff;font-size:19px;
-       font-weight:900;box-shadow:0 3px 10px rgba(255,90,46,.4)}
-  .ad .t1{font-size:12.5px;font-weight:800;color:#fff;letter-spacing:.04em}
-  .ad .pill{font-size:9.5px;font-weight:600;color:#ffb892;background:rgba(255,122,69,.16);
-       border-radius:3px;padding:1px 5px;margin-left:7px}
-  .ad .t2{font-size:13px;font-weight:600;color:#eef1f8;margin-top:3px}
-  .ad .cta{flex:none;height:34px;padding:0 16px;border-radius:999px;display:flex;align-items:center;
-       background:linear-gradient(150deg,#ff8a4c,#ff5a2e);color:#fff;font-size:12.5px;font-weight:700;
-       box-shadow:0 3px 10px rgba(255,90,46,.36)}
-  .ad .cta:hover{filter:brightness(1.07)}
-
-  /* Status bar */
-  .status{height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 13px;
-          background:#edeef1;border-top:1px solid #e0e1e5;flex:none}
-  .status .l{display:flex;align-items:center;gap:7px;font-size:11px;color:#6a7079;font-weight:500}
-  .status .dot{width:6px;height:6px;border-radius:50%;background:#1a7f37}
-  .status .dot.bad{background:#c42b1c}
-  .status .r{font-size:10.5px;color:#a2a8b2}
-
-  /* Modals */
-  .overlay{position:fixed;inset:0;background:rgba(24,28,36,.34);display:none;
-           align-items:center;justify-content:center;padding:18px;z-index:10}
-  .overlay.on{display:flex;animation:fade .15s ease}
+  input{font-family:inherit}
+  input::placeholder{color:#A8A8AC}
+  input:focus{outline:none}
+  ::selection{background:rgba(254,120,11,.18)}
+  ::-webkit-scrollbar{width:13px}
+  ::-webkit-scrollbar-thumb{background:#C7C7CC;border-radius:99px;border:4px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-thumb:hover{background:#AEAEB4;background-clip:padding-box}
+  @keyframes ssk-stripe{0%{background-position:0 0}100%{background-position:24px 0}}
+  @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes fade{from{opacity:0}to{opacity:1}}
-  .modal{width:472px;max-width:100%;max-height:calc(100% - 24px);overflow:auto;background:#fff;
-         border:1px solid #d7dae0;border-radius:9px;box-shadow:0 20px 48px rgba(20,24,31,.34);
-         animation:pop .16s ease}
   @keyframes pop{from{opacity:0;transform:scale(.97) translateY(6px)}to{opacity:1;transform:none}}
-  .mhead{display:flex;align-items:center;padding:14px 16px;border-bottom:1px solid #eef0f2}
-  .mhead .mt{font-size:13px;font-weight:700;color:#1d2129}
-  .mclose{margin-left:auto;width:28px;height:28px;border:none;border-radius:5px;background:transparent;
-          color:#7c828d;font-size:14px;cursor:default}
-  .mclose:hover{background:#eceef1}
-  .mbody{padding:16px}
-  .vinfo{display:flex;gap:13px;align-items:flex-start;margin-bottom:16px}
-  .vthumb{position:relative;width:152px;height:85px;border-radius:6px;flex:none;overflow:hidden;
-          background:linear-gradient(135deg,#dde3ec,#c6cdda);display:flex;align-items:center;justify-content:center}
+
+  .app{position:fixed;inset:0;display:flex;flex-direction:column;background:#fff;overflow:hidden}
+
+  /* ── 타이틀바 (frameless, 드래그) ── */
+  .titlebar{display:flex;align-items:center;justify-content:space-between;
+            height:34px;padding-left:11px;background:#EAEAEC;flex:none}
+  .tb-left{display:flex;align-items:center;gap:8px;flex:1;height:100%}
+  .logo{display:flex;align-items:center;justify-content:center;width:18px;height:18px;
+        border-radius:4px;background:var(--accent)}
+  .tb-name{font-size:12px;font-weight:600;color:var(--ink3)}
+  .caps{display:flex;align-items:stretch;height:100%}
+  .cap{display:flex;align-items:center;justify-content:center;width:45px;height:100%;
+       color:#5A5A5E;cursor:default}
+  .cap:hover{background:#DCDCDF}
+  .cap.close:hover{background:#C42B1C;color:#fff}
+
+  /* ── 툴바 ── */
+  .toolbar{display:flex;align-items:center;gap:12px;height:58px;padding:0 16px;
+           background:#fff;border-bottom:1px solid #ECECEF;flex:none}
+  .btn-primary{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;
+               border-radius:5px;border:none;background:var(--accent);color:#fff;
+               font-size:13.5px;font-weight:700;font-family:inherit;cursor:default}
+  .btn-primary:hover{filter:brightness(1.06)} .btn-primary:active{filter:brightness(.95)}
+  .btn-primary[disabled]{filter:saturate(.6) brightness(1.05);cursor:default}
+  .grow{flex:1}
+  .smart{display:inline-flex;align-items:center;gap:9px;height:36px;padding:0 12px;
+         border-radius:5px;border:none;background:transparent;cursor:default}
+  .smart:hover{background:#F2F2F4}
+  .smart .lbl{font-size:12.5px;font-weight:600;color:var(--ink3)}
+  .switch{position:relative;width:34px;height:19px;border-radius:999px;background:#C9C9CE;transition:background .15s}
+  .knob{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;
+        background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:left .15s}
+  .vdiv{width:1px;height:22px;background:#E4E4E7}
+  .iconbtn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;
+           border-radius:5px;border:none;background:transparent;color:#5E5E62;cursor:default}
+  .iconbtn:hover{background:#F2F2F4}
+
+  /* ── 필터바 ── */
+  .filterbar{display:flex;align-items:center;gap:4px;height:40px;padding:0 14px;
+             background:#FAFAFB;border-bottom:1px solid #EFEFF1;flex:none}
+  .ft{display:inline-flex;align-items:center;height:30px;padding:0 12px;border-radius:6px;
+      border:none;background:transparent;cursor:default;font-size:12.5px;font-weight:500;
+      color:var(--muted);font-family:inherit}
+  .ft .c{font-size:11px;font-weight:700;color:#B0B0B4;margin-left:5px}
+  .ft.on{font-weight:700;color:var(--ink);background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.1)}
+  .ft.on .c{color:var(--accent)}
+  .clear{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:5px;
+         border:none;background:transparent;color:var(--muted);font-size:12px;font-weight:600;
+         font-family:inherit;cursor:default}
+  .clear:hover{background:#ECECEF;color:var(--ink3)}
+
+  /* ── 목록 ── */
+  .list{flex:1;overflow-y:auto;min-height:0;background:#fff}
+  .row{display:flex;align-items:center;gap:14px;padding:13px 16px;border-bottom:1px solid #F1F1F3}
+  .row:hover{background:#F7F8FA}
+  .thumb{position:relative;flex:none;width:92px;height:52px;border-radius:5px;overflow:hidden;
+         background:linear-gradient(135deg,#2B3440,#5A6B7B);display:flex;align-items:center;justify-content:center}
+  .thumb img{width:100%;height:100%;object-fit:cover}
+  .thumb-ph{color:rgba(255,255,255,.92);font-size:13px}
+  .thumb-dur{position:absolute;right:5px;bottom:4px;padding:1px 5px;border-radius:4px;
+             background:rgba(0,0,0,.74);color:#fff;font-size:10px;font-weight:700}
+  .row-mid{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+  .row-top{display:flex;align-items:center;gap:8px;min-width:0}
+  .row-title{font-size:13.5px;font-weight:600;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row-sub{flex:none;padding:1px 6px;border-radius:4px;background:#EEEEF1;color:#6B6B6F;font-size:10.5px;font-weight:700}
+  .row-prog{display:flex;align-items:center;gap:11px}
+  .bar{flex:1;max-width:440px;height:6px;border-radius:3px;background:#E9E9ED;overflow:hidden}
+  .bar-fill{height:100%;border-radius:3px;transition:width .4s ease;width:0}
+  .bar-fill.dl{background-color:var(--accent);
+       background-image:linear-gradient(45deg,rgba(255,255,255,.25) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.25) 50%,rgba(255,255,255,.25) 75%,transparent 75%);
+       background-size:24px 24px;animation:ssk-stripe .7s linear infinite}
+  .bar-fill.done{background:var(--green)}
+  .bar-fill.paused{background:#B8B8BD}
+  .bar-fill.err{background:var(--danger)}
+  .bar-fill.queued{background:transparent}
+  .row-meta{flex:none;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .row-acts{flex:none;display:flex;align-items:center;gap:3px}
+  .act{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:5px;
+       border:none;background:transparent;color:#6B6B6F;cursor:default;font-family:inherit}
+  .act:hover{background:#E8E8EB}
+  .act.x{color:#9A9A9E} .act.x:hover{background:#E8E8EB;color:var(--danger)}
+
+  .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;
+         gap:12px;padding:74px 20px;text-align:center}
+  .empty-ic{display:flex;align-items:center;justify-content:center;width:64px;height:64px;
+            border-radius:14px;background:var(--accent-soft)}
+  .empty-t{font-size:15px;font-weight:700;color:var(--ink3)}
+  .empty-d{font-size:13px;color:var(--muted2);line-height:1.6}
+  .empty-d b{color:var(--accent)}
+
+  /* ── 상태바 ── */
+  .statusbar{display:flex;align-items:center;justify-content:space-between;gap:14px;height:26px;
+             padding:0 12px;background:#F0F0F1;border-top:1px solid #E2E2E5;flex:none}
+  .st-left{display:flex;align-items:center;gap:6px;min-width:0;cursor:default}
+  .st-left span{font-size:11.5px;color:#6B6B6F;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .st-right{flex:none;font-size:11.5px;color:#6B6B6F;font-weight:600}
+
+  /* ── 모달 ── */
+  .overlay{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;
+           padding:24px;background:rgba(20,20,22,.42)}
+  .overlay.on{display:flex;animation:fade .15s ease}
+  .modal{width:560px;max-width:100%;max-height:100%;display:flex;flex-direction:column;
+         background:#fff;border:1px solid #D8D8DB;border-radius:8px;
+         box-shadow:0 24px 60px rgba(0,0,0,.35);overflow:hidden;animation:pop .16s ease}
+  .mhead{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;
+         background:#F6F6F7;border-bottom:1px solid #E6E6E9}
+  .mhead .mt{font-size:13.5px;font-weight:700;color:var(--ink)}
+  .mx{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:4px;
+      border:none;background:transparent;color:var(--muted);cursor:default;font-family:inherit}
+  .mx:hover{background:#E6E6E9;color:var(--ink3)}
+
+  /* 분석/다운로드 모달 */
+  .mbody-pad{padding:18px 16px}
+  .vinfo{display:flex;gap:16px;align-items:flex-start}
+  .vthumb{position:relative;flex:none;width:224px;aspect-ratio:16/9;border-radius:6px;overflow:hidden;
+          background:linear-gradient(135deg,#241a12,#6b3d10 55%,var(--accent));
+          display:flex;align-items:center;justify-content:center}
   .vthumb img{width:100%;height:100%;object-fit:cover}
-  .vtitle{font-size:14px;font-weight:600;line-height:1.42;color:#1d2129;margin-bottom:6px}
-  .vmeta{font-size:12px;color:#8b919b}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:11px 14px}
-  .field .lbl{display:block;margin-bottom:6px}
-  select{appearance:none;-webkit-appearance:none;width:100%;height:34px;border:1px solid #d3d6dc;
-         border-radius:4px;padding:0 30px 0 11px;font-size:12.5px;font-family:inherit;font-weight:500;
-         color:#1d2129;background:#fff
-         url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M1 3l4 4 4-4' stroke='%239298a2' fill='none' stroke-width='1.4'/></svg>")
-         no-repeat right 11px center;outline:none;cursor:default}
-  select:focus{border-color:#2950d8}
-  .mfoot{display:flex;align-items:center;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid #eef0f2}
-  .savepath{font-size:11px;color:#9298a2;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .btn-sec{height:36px;padding:0 16px;border-radius:5px;border:1px solid #d3d6dc;background:#fcfcfd;
-           color:#2b3038;font-size:12.5px;font-weight:600;font-family:inherit;cursor:default}
-  .btn-sec:hover{background:#f1f2f4}
-  .field input[type=text]{width:100%;height:34px;border:1px solid #d3d6dc;border-bottom:1px solid #9499a2;
-           border-radius:4px;padding:0 11px 1px;font-size:12px;font-family:inherit;color:#3a3f48;
-           background:#fff;outline:none;user-select:text}
+  .vplay{width:42px;height:42px;border-radius:50%;background:rgba(255,255,255,.92);
+         display:flex;align-items:center;justify-content:center}
+  .vleft{flex:none;width:224px;display:flex;flex-direction:column;gap:10px}
+  .vtitle{font-size:12.5px;font-weight:700;color:var(--ink2);line-height:1.4;
+          display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .vmeta{font-size:11.5px;color:var(--muted)}
+  .vright{flex:1;min-width:0;display:flex;flex-direction:column}
+  .tabs{display:flex;gap:3px;padding:3px;background:#EEEEF0;border-radius:6px;margin-bottom:11px}
+  .seg{flex:1;height:30px;border-radius:5px;border:none;cursor:default;font-size:12.5px;font-weight:700;
+       font-family:inherit;background:transparent;color:#85898F;transition:all .12s}
+  .seg.on{background:#fff;color:#1B1D21;box-shadow:0 1px 2px rgba(0,0,0,.12)}
+  #mPicker{display:flex;flex-direction:column;gap:8px;max-height:210px;overflow-y:auto;padding-right:4px}
+  .fmtrow{display:flex;gap:6px}
+  .fmtbtn{flex:1;display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:7px 11px;
+          border-radius:6px;border:1px solid #E4E6E9;background:#fff;cursor:default;font-family:inherit;
+          font-size:12.5px;font-weight:700;color:#1B1D21}
+  .fmtbtn.on{border-color:var(--accent);background:var(--accent-soft)}
+  .fmtbtn .fmtnote{font-size:10px;font-weight:500;color:var(--muted3)}
+  .qrow{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border-radius:6px;
+        cursor:default;text-align:left;border:1px solid #E4E6E9;background:#fff;font-family:inherit}
+  .qrow.on{border-color:var(--accent);background:var(--accent-soft)}
+  .radio{flex:none;display:flex;align-items:center;justify-content:center;width:17px;height:17px;
+         border-radius:50%;border:2px solid #CDD1D6}
+  .radio.on{border-color:var(--accent)}
+  .radio .dot{width:8px;height:8px;border-radius:50%;background:transparent}
+  .radio.on .dot{background:var(--accent)}
+  .qmeta{display:flex;flex-direction:column;align-items:flex-start;gap:1px}
+  .qres{font-size:13px;font-weight:700;color:#1B1D21}
+  .qnote{font-size:10.5px;color:var(--muted3)}
+  .savebar{display:flex;align-items:center;gap:9px;padding:11px 16px;background:#FAFBFB;border-top:1px solid #EEEFF1}
+  .savebar .p{flex:1;min-width:0;font-size:12px;color:#5B6068;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .btn-sec{flex:none;height:30px;padding:0 12px;border-radius:5px;border:1px solid #DFE1E4;background:#fff;
+           color:#3A3F45;font-size:12px;font-weight:600;font-family:inherit;cursor:default}
+  .btn-sec:hover{background:#F2F3F5}
+  .mfoot{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #EEEFF1}
+  .btn-cancel{height:36px;padding:0 16px;border-radius:5px;border:1px solid #DFE1E4;background:#fff;
+              color:#3A3F45;font-size:13px;font-weight:600;font-family:inherit;cursor:default}
+  .btn-cancel:hover{background:#F4F5F7}
+
+  .spinner{width:30px;height:30px;border:3px solid #EAEAEC;border-top-color:var(--accent);
+           border-radius:50%;animation:spin .8s linear infinite}
+  .mload{display:flex;flex-direction:column;align-items:center;gap:13px;padding:40px 0}
+  .mload .t{font-size:12.5px;color:var(--muted)}
+  .merr{padding:22px 18px;font-size:12.5px;color:var(--danger);line-height:1.55}
+
+  /* 설정 모달 */
+  .field-lbl{font-size:11px;font-weight:700;color:var(--muted2);letter-spacing:.04em}
+  .pathinput{flex:1;min-width:0;height:34px;border:1px solid #DFE1E4;border-radius:5px;padding:0 11px;
+             font-size:12px;color:#3A3F45;background:#FAFBFB;user-select:text}
+
+  /* 약관 모달 */
   .tos-item{display:flex;gap:11px;align-items:flex-start;margin-bottom:11px}
-  .tos-num{flex:none;width:20px;height:20px;border-radius:50%;background:#eef2fc;color:#2950d8;
+  .tos-num{flex:none;width:20px;height:20px;border-radius:50%;background:var(--accent-soft);color:var(--accent);
            font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;margin-top:1px}
-  .tos-txt{font-size:12.5px;color:#3a3f48;line-height:1.55}
-  .tos-agree{display:flex;align-items:center;gap:8px;cursor:pointer;margin:14px 0 13px}
-  .exit-ad{display:block;border-radius:10px;background:linear-gradient(135deg,#1b2230,#2a3450 55%,#3c4774);
-           padding:22px;cursor:default;position:relative;box-shadow:0 6px 18px rgba(27,34,48,.28)}
+  .tos-txt{font-size:12.5px;color:#3A3F48;line-height:1.55}
+  .tos-agree{display:flex;align-items:center;gap:8px;cursor:default;margin:4px 0 13px}
+
+  /* 종료 광고 */
+  .exit-ad{position:relative;display:block;border-radius:10px;padding:22px;cursor:default;
+           background:linear-gradient(135deg,#1b2230,#2a3450 55%,#3c4774);box-shadow:0 6px 18px rgba(27,34,48,.28)}
+  .exit-ad .tag{position:absolute;top:10px;right:12px;font-size:8.5px;font-weight:800;letter-spacing:.1em;
+       color:rgba(255,255,255,.42);border:1px solid rgba(255,255,255,.22);border-radius:3px;padding:0 4px}
+  .exit-ad .o{width:38px;height:38px;border-radius:10px;background:linear-gradient(150deg,#ff8a4c,#ff5a2e);
+       display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:900}
   .exit-ad .h{font-size:19px;font-weight:800;color:#fff;line-height:1.34;margin:14px 0 8px}
   .exit-ad .d{font-size:12.5px;color:#b9c0d2;line-height:1.5;margin-bottom:18px}
+  .exit-ad .cta{display:inline-flex;align-items:center;height:38px;padding:0 20px;border-radius:999px;
+       background:linear-gradient(150deg,#ff8a4c,#ff5a2e);color:#fff;font-size:13px;font-weight:700}
 
-  /* 분석 로딩 스피너 */
-  .spinner{width:30px;height:30px;border:3px solid #e4e7ec;border-top-color:#2950d8;
-           border-radius:50%;animation:spin .8s linear infinite}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  /* 목록 항목 제거(X) 버튼 */
-  .itx{flex:none;width:24px;height:24px;border:none;background:transparent;color:#b6bcc6;
-       font-size:13px;cursor:default;border-radius:5px;align-self:center;font-family:inherit}
-  .itx:hover{background:#f0f1f4;color:#c42b1c}
+  /* 토스트 */
+  #toast{position:fixed;left:50%;bottom:42px;transform:translateX(-50%);z-index:90;
+         max-width:80%;padding:10px 16px;border-radius:8px;background:rgba(27,27,29,.92);color:#fff;
+         font-size:12.5px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,.3);
+         opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
+  #toast.on{opacity:1;transform:translateX(-50%) translateY(-4px)}
 </style>
 </head>
 <body>
 <div class="app">
-  <!-- Title bar -->
+
+  <!-- 타이틀바 -->
   <div class="titlebar">
-    <div class="pywebview-drag-region" style="flex:1;display:flex;align-items:center;height:100%">
-      <div class="logo">↓</div>
-      <span class="title" id="appTitle">싹싹김치 다운로드</span>
-      <span class="ver" id="appVer">v1.3</span>
+    <div class="tb-left pywebview-drag-region">
+      <div class="logo">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 18h14" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <span class="tb-name" id="appTitle">싹싹김치 비디오 다운로더</span>
     </div>
     <div class="caps">
-      <div class="gear" title="설정" onclick="openSettings()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4a4f57" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-      </div>
-      <div class="cap" onclick="winMin()"><div style="width:11px;height:1px;background:#4a4f57"></div></div>
-      <div class="cap" onclick="winMax()"><div style="width:10px;height:10px;border:1px solid #4a4f57;border-radius:1px"></div></div>
-      <div class="cap close" onclick="winClose()"><span class="x" style="font-size:13px;color:#4a4f57">✕</span></div>
+      <div class="cap" title="최소화" onclick="api().win_minimize()"><svg width="10" height="10" viewBox="0 0 12 12"><rect x="1" y="5.5" width="10" height="1" fill="currentColor"/></svg></div>
+      <div class="cap" title="최대화" onclick="api().win_maximize()"><svg width="10" height="10" viewBox="0 0 12 12" fill="none"><rect x="1.8" y="1.8" width="8.4" height="8.4" stroke="currentColor" stroke-width="1.1"/></svg></div>
+      <div class="cap close" title="닫기" onclick="api().win_close()"><svg width="10" height="10" viewBox="0 0 12 12"><path d="M1.5 1.5 10.5 10.5M10.5 1.5 1.5 10.5" stroke="currentColor" stroke-width="1.2"/></svg></div>
     </div>
   </div>
 
-  <!-- Content -->
-  <div class="content">
-    <div class="card">
-      <div class="lbl">영상 링크</div>
-      <div class="urlrow">
-        <input id="url" type="text" placeholder="영상 주소(URL)를 붙여넣으면 자동으로 팝업이 뜹니다"
-               onpaste="setTimeout(analyze,60)" onkeydown="if(event.key==='Enter')analyze()">
-        <button class="btn-primary" onclick="pasteAnalyze()">붙여넣기 · 분석</button>
-      </div>
-      <div class="hint" id="urlHint">링크를 붙여넣으면 영상 정보 팝업이 뜹니다. 화질·포맷을 고르고 다운로드하세요.</div>
-    </div>
-
-    <div class="card listcard">
-      <div class="listhead">
-        <span class="lbl">다운로드 목록</span>
-        <span class="badge" id="count">0개</span>
-        <span class="cancel" id="cancelBtn" onclick="cancelDownload()">■ 취소</span>
-      </div>
-      <div class="items" id="items"></div>
-      <div class="empty" id="empty">
-        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#c2c7cf" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-        <div class="e">링크를 붙여넣어 다운로드를 시작하세요</div>
-      </div>
-    </div>
-
-    <div class="ad" onclick="openPromo()">
-      <span class="tag">AD</span>
-      <div class="o">O</div>
-      <div style="flex:1;min-width:0">
-        <div><span class="t1">OFFCUT&nbsp;STUDIO</span><span class="pill">제휴</span></div>
-        <div class="t2">촬영부터 편집·납품까지, 영상 제작의 모든 것을 한 곳에서</div>
-      </div>
-      <span class="cta">무료로 시작 →</span>
-    </div>
+  <!-- 툴바 -->
+  <div class="toolbar">
+    <button class="btn-primary" id="pasteBtn" onclick="pasteAnalyze()">
+      <span id="pasteIcon" style="display:inline-flex"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="8" y="3" width="8" height="4" rx="1" stroke="#fff" stroke-width="1.9"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2" stroke="#fff" stroke-width="1.9"/><path d="M12 11v6m0 0 2-2M12 17l-2-2" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      <span id="pasteLbl">링크 붙여넣기</span>
+    </button>
+    <div class="grow"></div>
+    <button class="smart" id="smartBtn" onclick="toggleSmart()" title="켜면 붙여넣기 즉시 기본 화질로 다운로드합니다">
+      <svg id="smartIcon" width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m13 2-9 11h6l-2 9 9-11h-6z" stroke="#9A9A9E" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      <span class="lbl">스마트 모드</span>
+      <span class="switch" id="smartTrack"><span class="knob" id="smartKnob"></span></span>
+    </button>
+    <div class="vdiv"></div>
+    <button class="iconbtn" title="설정" onclick="openSettings()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87 2 2 0 1 1-2.83 2.83 1.7 1.7 0 0 0-2.87 1.2V21a2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.83-1.2 2 2 0 1 1-2.83-2.83A1.7 1.7 0 0 0 4.6 14a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.83 2 2 0 1 1 2.83-2.83A1.7 1.7 0 0 0 11.46 5.4 2 2 0 1 1 15.4 5.4a1.7 1.7 0 0 0 2.83 1.2 2 2 0 1 1 2.83 2.83A1.7 1.7 0 0 0 19.4 13.5Z" stroke="currentColor" stroke-width="1.4"/></svg>
+    </button>
   </div>
 
-  <div class="status">
-    <div class="l"><span class="dot" id="stDot"></span><span id="stText">준비 확인 중…</span></div>
-    <div class="r">개인적 저장 용도 · 저작권 준수 책임은 사용자</div>
+  <!-- 필터바 -->
+  <div class="filterbar">
+    <button class="ft" id="ftAll" onclick="setFilter('all')">전체<span class="c" id="cAll">0</span></button>
+    <button class="ft" id="ftActive" onclick="setFilter('active')">진행 중<span class="c" id="cActive">0</span></button>
+    <button class="ft" id="ftDone" onclick="setFilter('done')">완료<span class="c" id="cDone">0</span></button>
+    <div class="grow"></div>
+    <button class="clear" onclick="clearDone()">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M5 7h14M9 7V5h6v2m-1 0v12a1 1 0 0 1-1 1H10a1 1 0 0 1-1-1V7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      완료 항목 지우기
+    </button>
+  </div>
+
+  <!-- 목록 -->
+  <div class="list" id="list"></div>
+
+  <!-- 상태바 -->
+  <div class="statusbar">
+    <div class="st-left" id="stLeft" onclick="api().open_folder()" title="저장 폴더 열기">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex:none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="#9A9A9E" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      <span id="stPath">준비 확인 중…</span>
+    </div>
+    <span class="st-right" id="stSummary"></span>
   </div>
 </div>
 
-<!-- Settings popup -->
-<div class="overlay" id="ovSettings" onclick="if(event.target===this)closeSettings()">
-  <div class="modal" style="width:452px">
-    <div class="mhead"><span class="mt">설정</span><button class="mclose" onclick="closeSettings()">✕</button></div>
-    <div class="mbody">
-      <div class="field">
-        <span class="lbl">저장 위치</span>
-        <div style="display:flex;gap:7px;margin-top:7px;align-items:center">
-          <input id="sSave" type="text" readonly style="flex:1;min-width:0">
-          <button class="btn-sec" style="height:34px;flex:none;white-space:nowrap;padding:0 18px" onclick="pickFolder()">찾기</button>
-          <button class="btn-sec" style="height:34px;flex:none;white-space:nowrap;padding:0 18px" onclick="openFolder()">열기</button>
-        </div>
-      </div>
-      <div style="margin-top:18px;padding-top:15px;border-top:1px solid #eef0f2;display:flex">
-        <button class="btn-primary" style="margin-left:auto;padding:0 22px" onclick="closeSettings()">완료</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Analyze / download popup -->
-<div class="overlay" id="ovAnalyze" onclick="if(event.target===this)closeAnalyze()">
+<!-- 분석 / 다운로드 모달 -->
+<div class="overlay" id="ovPaste" onclick="if(event.target===this)closePaste()">
   <div class="modal">
-    <div class="mhead"><span class="mt">영상 다운로드</span><button class="mclose" onclick="closeAnalyze()">✕</button></div>
-    <div class="mbody">
-      <div id="aLoading" style="display:flex;flex-direction:column;align-items:center;gap:13px;padding:34px 0">
-        <div class="spinner"></div>
-        <div style="font-size:12.5px;color:#8b919b">영상 정보 분석 중…</div>
-      </div>
-      <div id="aErr" style="display:none;padding:18px 4px;font-size:12.5px;color:#c42b1c;line-height:1.55"></div>
-      <div id="aContent" style="display:none">
+    <div class="mhead"><span class="mt">동영상 다운로드</span><button class="mx" onclick="closePaste()">✕</button></div>
+
+    <div id="mLoading" class="mload"><div class="spinner"></div><div class="t">영상 정보 분석 중…</div></div>
+    <div id="mErr" class="merr" style="display:none"></div>
+
+    <div id="mContent" style="display:none">
+      <div class="mbody-pad">
         <div class="vinfo">
-          <div class="vthumb" id="aThumb"><span class="play" style="width:36px;height:36px;font-size:13px">▶</span></div>
-          <div style="flex:1;min-width:0">
-            <div class="vtitle" id="aTitle"></div>
-            <div class="vmeta" id="aMeta"></div>
+          <div class="vleft">
+            <div class="vthumb" id="mThumb"><div class="vplay"><svg width="18" height="18" viewBox="0 0 24 24" fill="#15171A"><path d="M8 5.5v13l11-6.5z"/></svg></div></div>
+            <div class="vtitle" id="mTitle"></div>
+            <div class="vmeta" id="mMeta"></div>
+          </div>
+          <div class="vright">
+            <div class="tabs">
+              <button class="seg" id="tabVideo" onclick="pickTab('video')">동영상</button>
+              <button class="seg" id="tabAudio" onclick="pickTab('audio')">음원만</button>
+            </div>
+            <div id="mPicker"></div>
           </div>
         </div>
-        <div class="grid2">
-          <div class="field"><span class="lbl">화질</span><select id="aQuality"></select></div>
-          <div class="field"><span class="lbl">포맷</span><select id="aFormat"></select></div>
-        </div>
-        <div class="mfoot">
-          <span class="savepath" id="aSave"></span>
-          <button class="btn-sec" style="padding:0 12px" onclick="changeSaveFromPopup()">경로 변경</button>
-          <button class="btn-sec" onclick="closeAnalyze()">취소</button>
-          <button class="btn-primary" style="height:36px;padding:0 20px;font-size:13px" onclick="startDownload()">다운로드</button>
-        </div>
+      </div>
+      <div class="savebar">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style="flex:none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="#85898F" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span class="p" id="mSave"></span>
+        <button class="btn-sec" onclick="changeSaveFromPopup()">찾아보기</button>
+      </div>
+      <div class="mfoot">
+        <button class="btn-cancel" onclick="closePaste()">취소</button>
+        <button class="btn-primary" onclick="confirmDownload()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          다운로드
+        </button>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Exit promo popup -->
+<!-- 설정 모달 -->
+<div class="overlay" id="ovSettings" onclick="if(event.target===this)closeSettings()">
+  <div class="modal" style="width:460px">
+    <div class="mhead"><span class="mt">설정</span><button class="mx" onclick="closeSettings()">✕</button></div>
+    <div class="mbody-pad">
+      <div class="field-lbl">저장 위치</div>
+      <div style="display:flex;gap:7px;margin-top:8px;align-items:center">
+        <input id="setPath" type="text" class="pathinput" readonly>
+        <button class="btn-sec" style="height:34px;padding:0 16px" onclick="pickFolder()">찾기</button>
+        <button class="btn-sec" style="height:34px;padding:0 16px" onclick="api().open_folder()">열기</button>
+      </div>
+    </div>
+    <div class="mfoot"><button class="btn-primary" onclick="closeSettings()">완료</button></div>
+  </div>
+</div>
+
+<!-- 종료 광고 모달 -->
 <div class="overlay" id="ovExit" onclick="if(event.target===this)closeExit()">
   <div class="modal" style="width:404px">
     <div style="padding:20px 20px 0;text-align:center">
-      <div style="font-size:15px;font-weight:700;color:#1d2129">이용해 주셔서 감사합니다</div>
-      <div style="font-size:12px;color:#9298a2;margin-top:4px">다음에 또 만나요</div>
+      <div style="font-size:15px;font-weight:700;color:var(--ink)">이용해 주셔서 감사합니다</div>
+      <div style="font-size:12px;color:var(--muted2);margin-top:4px">다음에 또 만나요</div>
     </div>
     <div style="padding:18px 20px 20px">
       <div class="exit-ad" onclick="openPromo()">
-        <span class="tag" style="position:absolute;top:10px;right:12px;font-size:8.5px;font-weight:800;color:rgba(255,255,255,.42);border:1px solid rgba(255,255,255,.22);border-radius:3px;padding:0 4px">AD</span>
-        <div style="display:flex;align-items:center;gap:10px"><div class="o" style="width:38px;height:38px;border-radius:10px;background:linear-gradient(150deg,#ff8a4c,#ff5a2e);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:900">O</div><span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span></div>
+        <span class="tag">AD</span>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="o">O</div>
+          <span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span>
+        </div>
         <div class="h">영상 제작의 모든 것,<br>한 곳에서 끝내세요</div>
         <div class="d">촬영 · 편집 · 자막 · 납품까지 이어지는 올인원 워크스페이스. 지금 무료로 시작해 보세요.</div>
-        <span class="cta" style="display:inline-flex;align-items:center;height:38px;padding:0 20px;border-radius:999px;background:linear-gradient(150deg,#ff8a4c,#ff5a2e);color:#fff;font-size:13px;font-weight:700">무료로 시작하기 →</span>
+        <span class="cta">무료로 시작하기 →</span>
       </div>
-      <button class="btn-sec" style="width:100%;height:38px;margin-top:14px" onclick="closeExit()">닫기</button>
+      <button class="btn-cancel" style="width:100%;height:38px;margin-top:14px" onclick="closeExit()">닫기</button>
     </div>
   </div>
 </div>
 
-<!-- Terms popup -->
-<div class="overlay" id="ovTos" style="background:rgba(24,28,36,.46)">
-  <div class="modal" style="width:484px;display:flex;flex-direction:column">
-    <div style="padding:18px 20px 14px;border-bottom:1px solid #eef0f2">
-      <div style="font-size:14.5px;font-weight:700;color:#1d2129">이용약관 및 면책 고지</div>
-      <div style="font-size:12px;color:#8b919b;margin-top:5px;line-height:1.5">본 프로그램은 사용자가 접근 권한을 가진 영상을 개인적으로 저장하기 위한 도구입니다. 사용 전 아래 내용에 동의해 주세요.</div>
+<!-- 약관 모달 -->
+<div class="overlay" id="ovTos" style="background:rgba(20,20,22,.5)">
+  <div class="modal" style="width:484px">
+    <div style="padding:18px 20px 14px;border-bottom:1px solid #EEF0F2">
+      <div style="font-size:14.5px;font-weight:700;color:var(--ink)">이용약관 및 면책 고지</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5">본 프로그램은 사용자가 접근 권한을 가진 영상을 개인적으로 저장하기 위한 도구입니다. 사용 전 아래 내용에 동의해 주세요.</div>
     </div>
     <div style="padding:14px 20px;overflow:auto">
-      <div class="tos-item"><span class="tos-num">1</span><div class="tos-txt">저작권 준수 책임은 전적으로 <b style="color:#1d2129">사용자 본인</b>에게 있습니다. 저작권자의 허락 없이 보호되는 콘텐츠를 다운로드·복제·배포하면 법에 저촉될 수 있습니다.</div></div>
+      <div class="tos-item"><span class="tos-num">1</span><div class="tos-txt">저작권 준수 책임은 전적으로 <b style="color:var(--ink)">사용자 본인</b>에게 있습니다. 저작권자의 허락 없이 보호되는 콘텐츠를 다운로드·복제·배포하면 법에 저촉될 수 있습니다.</div></div>
       <div class="tos-item"><span class="tos-num">2</span><div class="tos-txt">YouTube 등 각 사이트의 이용약관을 준수해야 합니다.</div></div>
       <div class="tos-item"><span class="tos-num">3</span><div class="tos-txt">DRM(기술적 보호조치)이 적용된 콘텐츠는 다운로드하지 않습니다.</div></div>
       <div class="tos-item"><span class="tos-num">4</span><div class="tos-txt">본 프로그램은 '있는 그대로(AS-IS)' 제공되며, 사용으로 인한 직·간접적 손해에 대해 제작자는 책임지지 않습니다.</div></div>
     </div>
-    <div style="padding:14px 20px 16px;border-top:1px solid #eef0f2;background:#fbfbfc">
-      <label class="tos-agree"><input type="checkbox" id="tosChk" style="width:16px;height:16px;accent-color:#2950d8"><span style="font-size:12.5px;color:#2b3038;font-weight:600">위 내용을 모두 확인했으며 동의합니다</span></label>
+    <div style="padding:14px 20px 16px;border-top:1px solid #EEF0F2;background:#FBFBFC">
+      <label class="tos-agree"><input type="checkbox" id="tosChk" style="width:16px;height:16px;accent-color:var(--accent)"><span style="font-size:12.5px;color:var(--ink3);font-weight:600">위 내용을 모두 확인했으며 동의합니다</span></label>
       <div style="display:flex;gap:8px">
-        <button class="btn-sec" onclick="winClose()">종료</button>
-        <button class="btn-primary" style="flex:1;height:38px" onclick="acceptTos()">동의함</button>
+        <button class="btn-cancel" onclick="api().win_close()">종료</button>
+        <button class="btn-primary" style="flex:1;height:38px;justify-content:center" onclick="acceptTos()">동의함</button>
       </div>
     </div>
   </div>
 </div>
 
+<div id="toast"></div>
+
 <script>
+'use strict';
+const ACCENT = '#fe780b';
 const api = () => window.pywebview.api;
-let INIT = {};
-let items = {};      // id -> element
-let curId = null;    // 현재 진행 중 다운로드 id
-let lastAnalyze = null;
-
 function $(id){ return document.getElementById(id); }
+function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+/* ── 앱 상태 ── */
+const S = {
+  init: {},
+  saveDir: '',
+  ffmpegMsg: '',
+  smart: false,
+  filter: 'all',
+  jobs: {},      // id -> {id,title,thumb,sub,status,pct,done,total,speed,size,file,statusText}
+  order: [],     // 최신순 id 배열
+  // 모달
+  analyze: null,
+  modalTab: 'video',
+  modalQuality: null,
+  modalFormat: null,
+};
+
+/* ── 부팅 ── */
 async function boot(){
-  INIT = await api().get_init();
-  $('appTitle').textContent = INIT.app_title;
-  $('appVer').textContent = 'v' + INIT.version;
-  setStatus(INIT.ffmpeg_ok);
-  $('sSave').value = INIT.save_dir;
-  if (!INIT.tos_accepted) $('ovTos').classList.add('on');
-  document.title = INIT.app_title || '싹싹김치 다운로드';
+  S.init = await api().get_init();
+  $('appTitle').textContent = S.init.app_title || '싹싹김치 비디오 다운로더';
+  document.title = S.init.app_title || '싹싹김치 비디오 다운로더';
+  S.saveDir = S.init.save_dir || '';
+  S.smart = localStorage.getItem('ssk_smart') === '1';
+  if(!S.init.ffmpeg_ok) S.ffmpegMsg = '필요한 파일 준비 중…';
+  renderSmart(); renderFilters(); renderList(); renderStatus();
+  if(!S.init.tos_accepted) $('ovTos').classList.add('on');
 }
-// 이벤트가 이미 지나갔어도(레이스) 동작하도록 양쪽 다 대비
-function bootWhenReady(){
-  if (window.pywebview && window.pywebview.api) { boot(); }
-  else { window.addEventListener('pywebviewready', boot); }
-}
-bootWhenReady();
+// pywebview 브리지 준비 레이스 양쪽 대비
+(function(){ if(window.pywebview && window.pywebview.api) boot();
+  else window.addEventListener('pywebviewready', boot); })();
 
-function setStatus(ok){
-  $('stDot').className = 'dot' + (ok ? '' : ' bad');
-  $('stText').textContent = ok ? '준비 완료' : '준비 중…';
-}
-function fillSelect(id, arr, val){
-  const s = $(id); s.innerHTML = '';
-  (arr||[]).forEach(o => { const e=document.createElement('option'); e.textContent=o; if(o===val)e.selected=true; s.appendChild(e); });
+/* ── 토스트 ── */
+let toastTimer = null;
+function toast(msg){
+  const t = $('toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>t.classList.remove('on'), 2600);
 }
 
-/* ---- window controls ---- */
-function winMin(){ api().win_minimize(); }
-function winMax(){ api().win_maximize(); }
-function winClose(){ api().win_close(); }
+/* ── 스마트 모드 ── */
+function renderSmart(){
+  const on = S.smart;
+  $('smartTrack').style.background = on ? ACCENT : '#C9C9CE';
+  $('smartKnob').style.left = on ? '17px' : '2px';
+  const ic = $('smartIcon');
+  ic.setAttribute('fill', on ? ACCENT : 'none');
+  ic.querySelector('path').setAttribute('stroke', on ? ACCENT : '#9A9A9E');
+}
+function toggleSmart(){
+  S.smart = !S.smart;
+  localStorage.setItem('ssk_smart', S.smart ? '1' : '0');
+  renderSmart();
+  toast(S.smart ? '스마트 모드 ON — 붙여넣기 즉시 기본 화질로 다운로드' : '스마트 모드 OFF — 붙여넣기 시 화질 선택 팝업');
+}
 
-/* ---- TOS ---- */
+/* ── 붙여넣기 → 분석 ── */
+function setPasteLoading(on){
+  $('pasteBtn').disabled = on;
+  $('pasteLbl').textContent = on ? '분석 중…' : '링크 붙여넣기';
+}
+async function pasteAnalyze(){
+  let t = '';
+  try { t = await api().read_clipboard(); } catch(e) {}
+  t = (t||'').trim();
+  if(!/^https?:\/\//i.test(t)){ toast('클립보드에 영상 링크(http/https)가 없습니다'); return; }
+  if(S.smart) smartDownload(t);
+  else { openPaste(); analyzeInModal(t); }
+}
+
+async function smartDownload(url){
+  setPasteLoading(true);
+  let r;
+  try { r = await api().analyze(url); } finally { setPasteLoading(false); }
+  if(!r || !r.ok){ toast('분석 실패: ' + ((r && r.error) || '')); return; }
+  S.saveDir = unShort(r.save_short) || S.saveDir;
+  const q = smartQuality(r), f = S.init.format || (S.init.formats && S.init.formats[0]);
+  const id = 'd' + Date.now();
+  const res = await api().start_download(id, r.url, q, f);
+  if(!res.ok){ toast(res.error || '시작 실패'); return; }
+  addJob(id, r.title, r.thumbnail, subBadge(q, f));
+  toast('다운로드 시작 · ' + r.title);
+}
+function smartQuality(r){
+  let q = S.init.quality;
+  const qs = r.qualities || [];
+  if(!qs.includes(q)) q = r.quality;
+  if((q||'').includes('음성만')) q = qs.find(x => !x.includes('음성만')) || r.quality;
+  return q;
+}
+
+let analyzeSeq = 0;
+async function analyzeInModal(url){
+  const seq = ++analyzeSeq;
+  showModalLoading();
+  const r = await api().analyze(url);
+  if(seq !== analyzeSeq || !$('ovPaste').classList.contains('on')) return; // 더 새 요청/닫힘
+  if(!r.ok){ showModalError('영상 정보를 가져오지 못했습니다: ' + (r.error||'')); return; }
+  S.analyze = r;
+  S.saveDir = unShort(r.save_short) || S.saveDir;
+  S.modalTab = 'video';
+  S.modalFormat = S.init.format || (S.init.formats && S.init.formats[0]);
+  S.modalQuality = r.quality;
+  fillModal(r);
+}
+// save_short 는 표시용 축약 경로라 실제 경로로 못 쓴다 → 비어있을 때만 폴백.
+function unShort(s){ return (s && s.indexOf('…') === -1) ? s : ''; }
+
+/* ── 분석 모달 ── */
+function openPaste(){ $('ovPaste').classList.add('on'); }
+function closePaste(){ $('ovPaste').classList.remove('on'); S.analyze = null; }
+function showModalLoading(){ $('mLoading').style.display='flex'; $('mErr').style.display='none'; $('mContent').style.display='none'; }
+function showModalError(m){ $('mLoading').style.display='none'; $('mContent').style.display='none'; $('mErr').style.display='block'; $('mErr').textContent='⚠ '+m; }
+
+function fillModal(r){
+  $('mLoading').style.display='none'; $('mErr').style.display='none'; $('mContent').style.display='block';
+  $('mTitle').textContent = r.title || '';
+  $('mMeta').textContent = r.meta || '';
+  $('mSave').textContent = '저장: ' + (r.save_short || S.saveDir || '');
+  const th = $('mThumb');
+  th.innerHTML = '<div class="vplay"><svg width="18" height="18" viewBox="0 0 24 24" fill="#15171A"><path d="M8 5.5v13l11-6.5z"/></svg></div>';
+  if(r.thumbnail){
+    const im = new Image(); im.src = r.thumbnail;
+    im.onload = () => { th.innerHTML=''; th.appendChild(im); };
+  }
+  renderPicker();
+}
+
+function qLabelParts(label){
+  const m = (label||'').match(/^(.*?)\s*\((.*)\)\s*$/);
+  return m ? {res:m[1].trim(), note:m[2].trim()} : {res:label, note:''};
+}
+function renderPicker(){
+  const r = S.analyze; if(!r) return;
+  $('tabVideo').className = 'seg' + (S.modalTab==='video' ? ' on' : '');
+  $('tabAudio').className = 'seg' + (S.modalTab==='audio' ? ' on' : '');
+  let html = '';
+  if(S.modalTab === 'video'){
+    const fmts = S.init.formats || [];
+    const cont = (S.modalFormat && S.modalFormat.includes('MKV')) ? 'MKV' : 'MP4';
+    html += '<div class="fmtrow">' + fmts.map(f => {
+      const on = f === S.modalFormat;
+      const short = f.includes('MKV') ? 'MKV' : 'MP4';
+      const note = qLabelParts(f).note;
+      return `<button class="fmtbtn${on?' on':''}" data-fmt="${escapeHtml(f)}">${short}<span class="fmtnote">${escapeHtml(note)}</span></button>`;
+    }).join('') + '</div>';
+    const vids = (r.qualities || []).filter(q => !q.includes('음성만'));
+    html += vids.map(q => {
+      const p = qLabelParts(q);
+      const note = [p.note, cont].filter(Boolean).join(' · ');
+      return qrowHTML(q, p.res, note, q === S.modalQuality);
+    }).join('');
+  } else {
+    html += qrowHTML('음성만 (MP3)', 'MP3 192kbps', '고음질 음원 · 커버 삽입', true);
+  }
+  const box = $('mPicker');
+  box.innerHTML = html;
+  box.querySelectorAll('[data-fmt]').forEach(b => b.onclick = () => pickFormat(b.dataset.fmt));
+  box.querySelectorAll('[data-val]').forEach(b => b.onclick = () => pickQuality(b.dataset.val));
+  // 선택된 화질이 스크롤 영역 밖이면 보이도록 (이미 보이면 움직이지 않음)
+  const sel = box.querySelector('.qrow.on');
+  if(sel) sel.scrollIntoView({block:'nearest'});
+}
+function qrowHTML(val, res, note, sel){
+  return `<button class="qrow${sel?' on':''}" data-val="${escapeHtml(val)}">
+    <span class="radio${sel?' on':''}"><span class="dot"></span></span>
+    <div class="qmeta"><span class="qres">${escapeHtml(res)}</span><span class="qnote">${escapeHtml(note)}</span></div>
+  </button>`;
+}
+function pickFormat(f){ S.modalFormat = f; renderPicker(); }
+function pickQuality(q){ S.modalQuality = q; renderPicker(); }
+function pickTab(tab){
+  S.modalTab = tab;
+  if(tab === 'audio') S.modalQuality = '음성만 (MP3)';
+  else {
+    const vids = (S.analyze.qualities || []).filter(q => !q.includes('음성만'));
+    if(!vids.includes(S.modalQuality)) S.modalQuality = (S.analyze.quality && !S.analyze.quality.includes('음성만')) ? S.analyze.quality : (vids[0] || '');
+  }
+  renderPicker();
+}
+async function changeSaveFromPopup(){
+  const d = await api().pick_folder();
+  if(d){ S.saveDir = d; $('mSave').textContent = '저장: ' + d; renderStatus(); }
+}
+async function confirmDownload(){
+  const r = S.analyze; if(!r) return;
+  const isAudio = S.modalTab === 'audio';
+  const quality = isAudio ? '음성만 (MP3)' : (S.modalQuality || r.quality);
+  const fmt = S.modalFormat || (S.init.formats && S.init.formats[0]);
+  const id = 'd' + Date.now();
+  const res = await api().start_download(id, r.url, quality, fmt);
+  if(!res.ok){ showModalError(res.error || '시작 실패'); return; }
+  addJob(id, r.title, r.thumbnail, subBadge(quality, fmt));
+  closePaste();
+}
+
+function subBadge(quality, fmt){
+  if((quality||'').includes('음성만')) return 'MP3';
+  const cont = (fmt && fmt.includes('MKV')) ? 'MKV' : 'MP4';
+  return cont + ' ' + (quality||'').split(' (')[0];
+}
+
+/* ── 설정 ── */
+function openSettings(){ $('setPath').value = S.saveDir; $('ovSettings').classList.add('on'); }
+function closeSettings(){ $('ovSettings').classList.remove('on'); }
+async function pickFolder(){ const d = await api().pick_folder(); if(d){ S.saveDir = d; $('setPath').value = d; renderStatus(); } }
+
+/* ── 종료 광고 / 약관 ── */
+function showExit(){ $('ovExit').classList.add('on'); }      // Python → JS (창 닫기 시)
+function closeExit(){ api().exit_confirmed(); }
+function openPromo(){ if(S.init.promo_url) api().open_url(S.init.promo_url); }
 async function acceptTos(){
-  if(!$('tosChk').checked){ $('tosChk').focus(); return; }
+  if(!$('tosChk').checked){ $('tosChk').focus(); toast('약관에 동의해 주세요'); return; }
   await api().accept_tos();
   $('ovTos').classList.remove('on');
 }
 
-/* ---- settings ---- */
-function openSettings(){ $('sSave').value = INIT.save_dir; $('ovSettings').classList.add('on'); }
-function closeSettings(){ $('ovSettings').classList.remove('on'); }
-async function pickFolder(){ const d = await api().pick_folder(); if(d){ INIT.save_dir=d; $('sSave').value=d; } }
-async function changeSaveFromPopup(){ const d = await api().pick_folder(); if(d){ INIT.save_dir=d; $('sSave').value=d; $('aSave').textContent='저장: '+d; } }
-function openFolder(){ api().open_folder(); }
-function openPromo(){ api().open_url(INIT.promo_url); }
-function setHint(t, err){ const h=$('urlHint'); h.textContent=t; h.className='hint'+(err?' err':''); }
+/* ── 작업(다운로드 항목) 관리 ── */
+function addJob(id, title, thumb, sub){
+  S.jobs[id] = { id, title: title||'', thumb: thumb||'', sub: sub||'', status:'queued',
+                 pct:0, done:0, total:0, speed:0, size:'', file:'', statusText:'' };
+  S.order.unshift(id);
+  renderList(); renderFilters(); renderStatus();
+}
+function removeJob(id){
+  try { api().forget_item(id); } catch(e) {}
+  delete S.jobs[id];
+  S.order = S.order.filter(x => x !== id);
+  renderList(); renderFilters(); renderStatus();
+}
+function clearDone(){
+  const rm = S.order.filter(id => ['done','error','cancelled'].includes(S.jobs[id].status));
+  if(!rm.length){ toast('지울 완료 항목이 없습니다'); return; }
+  rm.forEach(id => { try{ api().forget_item(id); }catch(e){} delete S.jobs[id]; });
+  S.order = S.order.filter(id => !rm.includes(id));
+  renderList(); renderFilters(); renderStatus();
+}
+function setFilter(f){ S.filter = f; renderFilters(); renderList(); }
 
-/* ---- 붙여넣기 → 영상 정보 팝업 (4K Downloader 식) ---- */
-async function pasteAnalyze(){
-  const t = await api().read_clipboard();
-  if(t) $('url').value = t;
-  analyze();
-}
-let analyzeSeq = 0;
-async function analyze(){
-  const url = $('url').value.trim();
-  if(!url) return;
-  const seq = ++analyzeSeq;
-  openAnalyze(); showAnalyzeLoading();              // 팝업 즉시 + 로딩 스피너
-  const r = await api().analyze(url);
-  if(seq !== analyzeSeq || !$('ovAnalyze').classList.contains('on')) return;  // 더 새 요청/닫힘
-  if(!r.ok){ showAnalyzeError('영상 정보를 가져오지 못했습니다: ' + (r.error||'')); return; }
-  lastAnalyze = r;
-  fillAnalyze(r);
-}
-function openAnalyze(){ $('ovAnalyze').classList.add('on'); }
-function closeAnalyze(){ $('ovAnalyze').classList.remove('on'); }
-function showAnalyzeLoading(){ $('aLoading').style.display='flex'; $('aErr').style.display='none'; $('aContent').style.display='none'; }
-function showAnalyzeError(m){ $('aLoading').style.display='none'; $('aContent').style.display='none'; $('aErr').style.display='block'; $('aErr').textContent='⚠ '+m; }
-function fillAnalyze(r){
-  $('aLoading').style.display='none'; $('aErr').style.display='none'; $('aContent').style.display='block';
-  $('aTitle').textContent = r.title;
-  $('aMeta').textContent = r.meta;
-  fillSelect('aQuality', r.qualities, r.quality);
-  fillSelect('aFormat', INIT.formats, INIT.format);
-  $('aSave').textContent = '저장: ' + r.save_short;
-  const th = $('aThumb');
-  th.innerHTML = r.thumbnail ? '' : '<span class="play" style="width:36px;height:36px;font-size:13px">▶</span>';
-  if(r.thumbnail){ const im=new Image(); im.src=r.thumbnail; im.onerror=()=>{th.innerHTML='<span class="play" style="width:36px;height:36px;font-size:13px">▶</span>';}; th.appendChild(im); }
+const ACTIVE = ['queued','downloading','merging','retry'];
+function isActive(j){ return ACTIVE.includes(j.status); }
+function visible(j){
+  if(S.filter === 'active') return isActive(j);
+  if(S.filter === 'done') return j.status === 'done';
+  return true;
 }
 
-/* ---- 다운로드 시작 (팝업의 '다운로드' 버튼) ---- */
-async function startDownload(){
-  if(!lastAnalyze) return;
-  const a = lastAnalyze;
-  const id = 'd' + Date.now();
-  const q = $('aQuality').value, f = $('aFormat').value;
-  const r = await api().start_download(id, a.url, q, f);
-  if(!r.ok){ showAnalyzeError(r.error || '시작 실패'); return; }
-  closeAnalyze();
-  addItem(id, a.title, a.thumbnail);           // 받는 중이면 대기열 → '대기 중…'
-  $('url').value = ''; lastAnalyze = null;      // 다음 URL 바로 받도록 재무장
+/* ── 렌더 ── */
+function renderFilters(){
+  const all = S.order.length;
+  let active = 0, done = 0;
+  S.order.forEach(id => { const j = S.jobs[id]; if(j.status==='done') done++; else if(isActive(j)) active++; });
+  $('cAll').textContent = all; $('cActive').textContent = active; $('cDone').textContent = done;
+  $('ftAll').className = 'ft' + (S.filter==='all'?' on':'');
+  $('ftActive').className = 'ft' + (S.filter==='active'?' on':'');
+  $('ftDone').className = 'ft' + (S.filter==='done'?' on':'');
 }
-function cancelDownload(){ api().cancel_download(); $('cancelBtn').textContent='취소 중…'; $('cancelBtn').style.color='#9298a2'; }
-
-function addItem(id, title, thumb){
-  curId = id;
-  $('empty').style.display = 'none';
-  const el = document.createElement('div');
-  el.className = 'item'; el.id = id;
-  el.innerHTML =
-    '<div class="thumb">' + (thumb ? '<img src="'+thumb+'" onerror="this.style.display=\'none\'">' : '<span class="play">▶</span>') + '</div>' +
-    '<div class="it-mid"><div class="it-title">'+escapeHtml(title)+'</div>' +
-    '<div class="bar"><div></div></div><div class="it-meta">대기 중…</div></div>' +
-    '<div class="it-pct">0%</div>' +
-    '<button class="itx" title="목록에서 제거" onclick="removeItem(\''+id+'\')">✕</button>';
-  $('items').prepend(el);
-  items[id] = el;
-  bumpCount();
+function renderStatus(){
+  $('stPath').textContent = S.ffmpegMsg || S.saveDir || '';
+  let active = 0, downloading = 0, speed = 0, done = 0;
+  S.order.forEach(id => {
+    const j = S.jobs[id];
+    if(j.status==='done') done++;
+    else if(isActive(j)){ active++; if(j.status==='downloading'){ downloading++; speed += (j.speed||0); } }
+  });
+  let summary = '';
+  if(active > 0) summary = downloading > 0 ? `${speed.toFixed(1)} MB/s · ${active}개 진행 중` : `${active}개 대기 중`;
+  else if(done > 0) summary = '모든 다운로드 완료';
+  $('stSummary').textContent = summary;
 }
-function removeItem(id){
-  const el = items[id]; if(!el) return;
-  el.remove(); delete items[id]; bumpCount();
-  if(Object.keys(items).length === 0) $('empty').style.display = 'flex';
-  try{ api().forget_item(id); }catch(e){}
+function renderList(){
+  const list = $('list');
+  const vis = S.order.filter(id => visible(S.jobs[id]));
+  if(!vis.length){ list.innerHTML = emptyHTML(); return; }
+  list.innerHTML = vis.map(id => rowHTML(S.jobs[id])).join('');
+  // 액션 버튼 핸들러 연결
+  list.querySelectorAll('[data-act]').forEach(b => {
+    const id = b.dataset.id, act = b.dataset.act;
+    if(act==='remove') b.onclick = () => removeJob(id);
+    else if(act==='folder') b.onclick = () => api().open_item(id);
+    else if(act==='play') b.onclick = () => api().play_item(id);
+  });
 }
-function bumpCount(){ $('count').textContent = Object.keys(items).length + '개'; }
-function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
-/* ---- progress callbacks (Python → JS) ---- */
-function dlProgress(id, p){
-  const el = items[id]; if(!el) return;
-  el.querySelector('.bar>div').style.width = p.pct + '%';
-  el.querySelector('.it-pct').textContent = Math.round(p.pct) + '%';
-  el.querySelector('.it-meta').textContent =
-    p.done.toFixed(1) + ' / ' + p.total.toFixed(1) + ' MB · ' + p.speed.toFixed(1) + ' MB/s';
+function emptyHTML(){
+  if(S.order.length === 0){
+    return `<div class="empty">
+      <div class="empty-ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M5 19h14" stroke="${ACCENT}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="empty-t">다운로드가 없습니다</div>
+      <div class="empty-d">영상 주소를 복사한 뒤 <b>링크 붙여넣기</b>를 누르세요.</div>
+    </div>`;
+  }
+  return `<div class="empty"><div class="empty-d">${S.filter==='done'?'완료된 항목이 없습니다':'진행 중인 항목이 없습니다'}</div></div>`;
 }
-function dlMerging(id){
-  const el = items[id]; if(!el) return;
-  el.querySelector('.bar>div').style.width = '99%';
-  el.querySelector('.it-meta').textContent = '🔄 합치는 중…';
+function barClass(st){
+  if(st==='done') return 'done';
+  if(st==='error') return 'err';
+  if(st==='cancelled') return 'paused';
+  if(st==='queued') return 'queued';
+  return 'dl'; // downloading / merging / retry
 }
-/* 폴백 재시도/2단계 진입 시 상태 문구 (Python → JS). 진행바는 건드리지 않음 */
-function dlStatus(id, text){
-  const el = items[id]; if(!el) return;
-  const meta = el.querySelector('.it-meta');
-  if(meta){ meta.className = 'it-meta'; meta.textContent = '⟳ ' + text; }
-}
-function dlDone(id, info){
-  const el = items[id]; if(!el) return;
-  el.querySelector('.bar')?.remove();
-  el.querySelector('.it-pct')?.remove();
-  const meta = el.querySelector('.it-meta');
-  meta.className = 'it-meta done';
-  meta.textContent = '완료 · ' + (info.size||'') + (info.file ? ' · ' + info.file : '');
-  if(!el.querySelector('.it-acts')){
-    const acts = document.createElement('div');
-    acts.className = 'it-acts';
-    acts.innerHTML = '<button class="sbtn" onclick="api().open_item(\''+id+'\')">폴더 열기</button>'+
-                     '<button class="sbtn blue" onclick="api().play_item(\''+id+'\')">재생</button>';
-    el.insertBefore(acts, el.querySelector('.itx'));   // X 버튼은 항상 맨 끝 유지
+function metaFor(j){
+  switch(j.status){
+    case 'done': return { meta: '완료' + (j.size?' · '+j.size:''), color: 'var(--green)' };
+    case 'error': return { meta: '✗ ' + (j.statusText || '실패'), color: 'var(--danger)' };
+    case 'cancelled': return { meta: '■ 취소됨', color: '#8A8A8E' };
+    case 'queued': return { meta: '대기 중', color: '#A6A6AA' };
+    case 'merging': return { meta: '🔄 합치는 중…', color: '#5E5E62' };
+    case 'retry': return { meta: '⟳ ' + (j.statusText||'재시도 중…'), color: '#5E5E62' };
+    default: { // downloading
+      const sp = j.speed > 0 ? ` · ${j.speed.toFixed(1)} MB/s` : '';
+      return { meta: `${Math.round(j.pct||0)}%${sp}`, color: '#5E5E62' };
+    }
   }
 }
+function rowHTML(j){
+  const cls = barClass(j.status);
+  const width = j.status==='done' ? 100 : (j.status==='merging' ? 99 : (j.pct||0));
+  const m = metaFor(j);
+  const thumb = j.thumb
+    ? `<img src="${escapeHtml(j.thumb)}" onerror="this.style.display='none'">`
+    : `<span class="thumb-ph">▶</span>`;
+  const dur = j.dur ? `<span class="thumb-dur">${escapeHtml(j.dur)}</span>` : '';
+  let acts = '';
+  if(j.status === 'done'){
+    acts += `<button class="act" data-act="folder" data-id="${j.id}" title="폴더 열기"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>`;
+    acts += `<button class="act" data-act="play" data-id="${j.id}" title="재생"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>`;
+  }
+  acts += `<button class="act x" data-act="remove" data-id="${j.id}" title="목록에서 제거">${
+    isActive(j)
+      ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
+      : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
+  }</button>`;
+  return `<div class="row" data-id="${j.id}">
+    <div class="thumb">${thumb}${dur}</div>
+    <div class="row-mid">
+      <div class="row-top">
+        <span class="row-title">${escapeHtml(j.title)}</span>
+        ${j.sub?`<span class="row-sub">${escapeHtml(j.sub)}</span>`:''}
+      </div>
+      <div class="row-prog">
+        <div class="bar"><div class="bar-fill ${cls}" style="width:${width}%"></div></div>
+        <span class="row-meta" style="color:${m.color}">${m.meta}</span>
+      </div>
+    </div>
+    <div class="row-acts">${acts}</div>
+  </div>`;
+}
+function rowEl(id){ return $('list').querySelector(`.row[data-id="${id}"]`); }
+
+/* ── Python → JS 콜백 ── */
+function setBusy(on){ S.busy = !!on; }   // 상태 요약은 작업 상태로부터 계산하므로 시각효과 불필요
+
+function dlProgress(id, p){
+  const j = S.jobs[id]; if(!j) return;
+  const wasActive = j.status==='downloading';
+  j.status = 'downloading'; j.pct = p.pct; j.done = p.done; j.total = p.total; j.speed = p.speed;
+  const row = rowEl(id);
+  if(!row){ renderStatus(); if(!wasActive) renderFilters(); return; }  // 필터로 숨겨진 경우
+  const fill = row.querySelector('.bar-fill');
+  if(fill){ if(!fill.classList.contains('dl')) fill.className = 'bar-fill dl'; fill.style.width = p.pct + '%'; }
+  const meta = row.querySelector('.row-meta');
+  if(meta){ const m = metaFor(j); meta.style.color = m.color; meta.textContent = m.meta; }
+  renderStatus();
+  if(!wasActive) renderFilters();
+}
+function dlMerging(id){ const j = S.jobs[id]; if(!j) return; j.status='merging'; renderList(); renderStatus(); }
+function dlStatus(id, text){ const j = S.jobs[id]; if(!j) return; j.status='retry'; j.statusText=text; renderList(); renderStatus(); }
+function dlDone(id, info){
+  const j = S.jobs[id]; if(!j) return;
+  j.status='done'; j.pct=100; j.speed=0; j.size=(info&&info.size)||''; j.file=(info&&info.file)||'';
+  renderList(); renderFilters(); renderStatus();
+}
+function dlError(id, msg){ const j = S.jobs[id]; if(!j) return; j.status='error'; j.statusText=msg; renderList(); renderFilters(); renderStatus(); }
+function dlCancelled(id){ const j = S.jobs[id]; if(!j) return; j.status='cancelled'; renderList(); renderFilters(); renderStatus(); }
 function ffmpegStatus(text, ok){
-  $('stText').textContent = text;
-  $('stDot').className = 'dot' + (ok ? '' : ' bad');
-  if(ok) INIT.ffmpeg_ok = true;
+  if(ok){ S.init.ffmpeg_ok = true; S.ffmpegMsg = ''; }
+  else S.ffmpegMsg = text;
+  renderStatus();
 }
-function dlError(id, msg){
-  const el = items[id]; if(!el) return;
-  el.querySelector('.bar')?.remove();
-  el.querySelector('.it-pct')?.remove();
-  const meta = el.querySelector('.it-meta');
-  meta.className = 'it-meta err'; meta.textContent = '✗ ' + msg;
-}
-function dlCancelled(id){
-  const el = items[id]; if(!el) return;
-  el.querySelector('.bar')?.remove();
-  el.querySelector('.it-pct')?.remove();
-  const meta = el.querySelector('.it-meta');
-  meta.className = 'it-meta'; meta.textContent = '■ 취소됨';
-}
-/* 다운로드 진행 중(또는 대기열 남음) 여부 → 취소 버튼 표시 (Python → JS) */
-function setBusy(on){ $('cancelBtn').style.display = on ? 'block' : 'none'; if(!on){ $('cancelBtn').textContent='■ 취소'; $('cancelBtn').style.color='#c42b1c'; } }
-function showExit(){ $('ovExit').classList.add('on'); }
-function closeExit(){ api().exit_confirmed(); }
+
+/* ── 키보드: ESC 로 분석/설정 모달 닫기 ── */
+document.addEventListener('keydown', e => {
+  if(e.key !== 'Escape') return;
+  if($('ovPaste').classList.contains('on')) closePaste();
+  else if($('ovSettings').classList.contains('on')) closeSettings();
+});
 </script>
 </body>
 </html>
