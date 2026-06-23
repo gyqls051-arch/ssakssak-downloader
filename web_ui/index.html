@@ -207,10 +207,14 @@
   .tos-txt{font-size:12.5px;color:#3A3F48;line-height:1.55}
   .tos-agree{display:flex;align-items:center;gap:8px;cursor:default;margin:4px 0 13px}
 
-  /* 종료 광고 */
-  .exit-ad{position:relative;display:block;border-radius:10px;padding:22px;cursor:default;
+  /* 시작/종료 팝업 광고 — web_ui/popup_start.png · popup_exit.png 있으면 그 이미지(4:3)로 표시.
+     없으면 onerror 로 .noimg 켜져 아래 텍스트 카드(.exit-fallback)로 폴백. 권장 720×540. */
+  .exit-ad{position:relative;display:block;border-radius:10px;overflow:hidden;cursor:default;
            background:linear-gradient(135deg,#1b2230,#2a3450 55%,#3c4774);box-shadow:0 6px 18px rgba(27,34,48,.28)}
-  .exit-ad .tag{position:absolute;top:10px;right:12px;font-size:8.5px;font-weight:800;letter-spacing:.1em;
+  .exit-img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover}  /* 사용자 디자인 팝업 */
+  .exit-fallback{display:none;padding:22px}                               /* 이미지 없을 때만 노출 */
+  .exit-ad.noimg .exit-fallback{display:block}
+  .exit-ad .tag{position:absolute;top:10px;right:12px;z-index:2;font-size:8.5px;font-weight:800;letter-spacing:.1em;
        color:rgba(255,255,255,.42);border:1px solid rgba(255,255,255,.22);border-radius:3px;padding:0 4px}
   .exit-ad .o{width:38px;height:38px;border-radius:10px;background:linear-gradient(150deg,#ff8a4c,#ff5a2e);
        display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;font-weight:900}
@@ -384,14 +388,18 @@
     </div>
     <div style="padding:18px 20px 20px">
       <div class="exit-ad" onclick="openPromo()">
+        <img class="exit-img" src="popup_exit.png" alt="OFFCUT STUDIO"
+             onerror="this.closest('.exit-ad').classList.add('noimg');this.remove()">
         <span class="tag">AD</span>
-        <div style="display:flex;align-items:center;gap:10px">
-          <div class="o">O</div>
-          <span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span>
+        <div class="exit-fallback">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="o">O</div>
+            <span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span>
+          </div>
+          <div class="h">영상 제작의 모든 것,<br>한 곳에서 끝내세요</div>
+          <div class="d">촬영 · 편집 · 자막 · 납품까지 이어지는 올인원 워크스페이스. 지금 무료로 시작해 보세요.</div>
+          <span class="cta">무료로 시작하기 →</span>
         </div>
-        <div class="h">영상 제작의 모든 것,<br>한 곳에서 끝내세요</div>
-        <div class="d">촬영 · 편집 · 자막 · 납품까지 이어지는 올인원 워크스페이스. 지금 무료로 시작해 보세요.</div>
-        <span class="cta">무료로 시작하기 →</span>
       </div>
       <button class="btn-cancel" style="width:100%;height:38px;margin-top:14px" onclick="closeExit()">닫기</button>
     </div>
@@ -406,11 +414,15 @@
     </div>
     <div style="padding:0 20px 20px">
       <div class="exit-ad" onclick="openPromo()">
+        <img class="exit-img" src="popup_start.png" alt="OFFCUT STUDIO"
+             onerror="this.closest('.exit-ad').classList.add('noimg');this.remove()">
         <span class="tag">AD</span>
-        <div style="display:flex;align-items:center;gap:10px"><div class="o">O</div><span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span></div>
-        <div class="h">영상 제작, 이제<br>한 곳에서 끝내세요</div>
-        <div class="d">촬영 · 편집 · 자막 · 납품까지 올인원 워크스페이스. 싹싹김치 사용자 한정 혜택을 확인해 보세요.</div>
-        <span class="cta">무료로 시작하기 →</span>
+        <div class="exit-fallback">
+          <div style="display:flex;align-items:center;gap:10px"><div class="o">O</div><span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span></div>
+          <div class="h">영상 제작, 이제<br>한 곳에서 끝내세요</div>
+          <div class="d">촬영 · 편집 · 자막 · 납품까지 올인원 워크스페이스. 싹싹김치 사용자 한정 혜택을 확인해 보세요.</div>
+          <span class="cta">무료로 시작하기 →</span>
+        </div>
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
         <label style="display:flex;align-items:center;gap:7px;cursor:default;font-size:12px;color:#7C7C80">
