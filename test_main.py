@@ -325,3 +325,30 @@ def test_scan_manifest_prefers_hls(monkeypatch):
                         lambda req, timeout=0: _Resp())
     got = Downloader._scan_manifest("https://c.com/watch")
     assert got == "https://c.com/v/master.m3u8?a=1"     # .m3u8 우선 + \/ 복원
+
+
+# ------------------- UpdateChecker 판정 -------------------
+
+def _uc():
+    return main.UpdateChecker(current_version="1.0")
+
+
+def test_interpret_new_version_carries_notes_and_url():
+    d = _uc()._interpret({"latest_version": "2.0",
+                          "release_notes": "메모",
+                          "download_url": "https://x.com/dl"})
+    assert d.kind == "new_version"
+    assert d.latest_version == "2.0" and d.release_notes == "메모"
+    assert d.download_url == "https://x.com/dl"
+
+
+def test_interpret_kinds():
+    assert _uc()._interpret({"killswitch": True}).kind == "killswitch"
+    assert _uc()._interpret({"min_supported_version": "1.5"}).kind == "force_update"
+    assert _uc()._interpret({"latest_version": "1.0"}).kind == "uptodate"
+
+
+def test_interpret_blocks_unsafe_download_url():
+    d = _uc()._interpret({"latest_version": "2.0",
+                          "download_url": "javascript:alert(1)"})
+    assert d.download_url is None      # is_safe_http_url 로 차단

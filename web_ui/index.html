@@ -243,6 +243,16 @@
           background:linear-gradient(150deg,#ff8a4c,#ff5a2e);color:#fff;font-size:13px;font-weight:700;
           box-shadow:0 3px 10px rgba(255,90,46,.32)}
 
+  /* 새 버전 알림 배너 (업데이트 체크 → Python 이 updateAvailable() 호출) */
+  .updbar{display:none;align-items:center;gap:10px;margin:8px 10px 0;padding:9px 14px;
+          border-radius:8px;background:var(--accent-soft);border:1px solid #FFD9B8;flex:none}
+  .updbar.on{display:flex}
+  .updbar .t{flex:1;min-width:0;font-size:12.5px;font-weight:600;color:var(--ink3);
+             white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .updbar .go{flex:none;height:28px;padding:0 14px;border-radius:5px;border:none;cursor:default;
+              background:var(--accent);color:#fff;font-size:12px;font-weight:700;font-family:inherit}
+  .updbar .go:hover{filter:brightness(1.06)}
+
   /* 토스트 */
   #toast{position:fixed;left:50%;bottom:42px;transform:translateX(-50%);z-index:90;
          max-width:80%;padding:10px 16px;border-radius:8px;background:rgba(27,27,29,.92);color:#fff;
@@ -295,6 +305,13 @@
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M5 7h14M9 7V5h6v2m-1 0v12a1 1 0 0 1-1 1H10a1 1 0 0 1-1-1V7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       완료 항목 지우기
     </button>
+  </div>
+
+  <!-- 새 버전 알림 배너 -->
+  <div class="updbar" id="updBar">
+    <span class="t" id="updText"></span>
+    <button class="go" id="updGo">다운로드</button>
+    <button class="mx" onclick="$('updBar').classList.remove('on')">✕</button>
   </div>
 
   <!-- 목록 -->
@@ -542,9 +559,9 @@ async function smartDownload(url){
   if(!r || !r.ok){ toast('분석 실패: ' + ((r && r.error) || '')); return; }
   const q = smartQuality(r), f = S.init.format || (S.init.formats && S.init.formats[0]);
   const id = 'd' + Date.now();
+  addJob(id, r.title, r.thumbnail, subBadge(q, f));   // 먼저 등록 → 초기 이벤트 유실 방지
   const res = await api().start_download(id, r.url, q, f);
-  if(!res.ok){ toast(res.error || '시작 실패'); return; }
-  addJob(id, r.title, r.thumbnail, subBadge(q, f));
+  if(!res.ok){ removeJob(id); toast(res.error || '시작 실패'); return; }
   toast('다운로드 시작 · ' + r.title);
 }
 function smartQuality(r){
@@ -656,9 +673,9 @@ async function confirmDownload(){
   const quality = isAudio ? '음성만 (MP3)' : (S.modalQuality || r.quality);
   const fmt = S.modalFormat || (S.init.formats && S.init.formats[0]);
   const id = 'd' + Date.now();
+  addJob(id, r.title, r.thumbnail, subBadge(quality, fmt));   // 먼저 등록 → 초기 이벤트 유실 방지
   const res = await api().start_download(id, r.url, quality, fmt);
-  if(!res.ok){ showModalError(res.error || '시작 실패'); return; }
-  addJob(id, r.title, r.thumbnail, subBadge(quality, fmt));
+  if(!res.ok){ removeJob(id); showModalError(res.error || '시작 실패'); return; }
   closePaste();
 }
 
@@ -678,14 +695,17 @@ function showExit(){ $('ovExit').classList.add('on'); }      // Python → JS (�
 function closeExit(){ api().exit_confirmed(); }
 function openPromo(){ if(S.init.promo_url) api().open_url(S.init.promo_url); }
 // 시작 팝업: TOS 동의된 실행에서만, '오늘 그만 보기' 안 했으면 1회 노출
+function todayLocal(){   // 로컬 날짜 (toISOString 은 UTC 라 한국 오전 9시에 날짜가 바뀜)
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
 function maybeShowStart(){
-  const today = new Date().toISOString().slice(0,10);
-  if(localStorage.getItem('ssk_start_hidden') === today) return;
+  if(localStorage.getItem('ssk_start_hidden') === todayLocal()) return;
   $('ovStart').classList.add('on');
 }
 function closeStart(){
   const chk = $('startHideChk');
-  if(chk && chk.checked) localStorage.setItem('ssk_start_hidden', new Date().toISOString().slice(0,10));
+  if(chk && chk.checked) localStorage.setItem('ssk_start_hidden', todayLocal());
   $('ovStart').classList.remove('on');
 }
 async function acceptTos(){
@@ -858,6 +878,12 @@ function ffmpegStatus(text, ok){
   if(ok){ S.init.ffmpeg_ok = true; S.ffmpegMsg = ''; }
   else S.ffmpegMsg = text;
   renderStatus();
+}
+function updateAvailable(ver, url, notes){    // Python → JS (업데이트 체크 결과)
+  $('updText').textContent = `🆕 새 버전 v${ver} 이 나왔습니다` + (notes ? ` — ${notes}` : '');
+  $('updText').title = notes || '';
+  $('updGo').onclick = () => { if(url) api().open_url(url); };
+  $('updBar').classList.add('on');
 }
 
 /* ── 키보드: ESC 로 분석/설정 모달 닫기 ── */

@@ -1202,7 +1202,8 @@ class Api:
         if not URL_RE.match(url):
             return {"ok": False, "error": "올바른 링크(http/https)가 아닙니다"}
         is_audio = "음성만" in quality
-        if self._ffmpeg_dir is None and not is_audio:
+        # 음성만(MP3)도 ffmpeg 필수 (FFmpegExtractAudio·커버 삽입) — 영상과 동일하게 막는다.
+        if self._ffmpeg_dir is None:
             return {"ok": False, "error": "ffmpeg 준비 중입니다. 잠시 후 다시 시도하세요"}
         save_dir = Path(self._cfg.get("save_dir", self._default_dir()))
         try:
@@ -1395,14 +1396,22 @@ class Api:
             self._cfg["killed_message"] = decision.message
             self._settings.save(self._cfg)
             self._kill(decision.message)
-        elif decision.kind == "force_update":
+            return
+        # 킬스위치 아님 → 이전 정지 상태가 남아 있으면 해제
+        if self._cfg.get("killed"):
+            self._cfg["killed"] = False
+            self._cfg["killed_message"] = ""
+            self._settings.save(self._cfg)
+        if decision.kind == "force_update":
             self._js(f"alert({json.dumps(decision.message + ' 업데이트가 필요합니다.')})")
             safe_open_url(decision.download_url)
-        else:
-            if self._cfg.get("killed"):
-                self._cfg["killed"] = False
-                self._cfg["killed_message"] = ""
-                self._settings.save(self._cfg)
+        elif decision.kind == "new_version":
+            # 새 버전 알림 배너 (강제 아님 — 사용자가 닫을 수 있음)
+            self._js(
+                f"updateAvailable({json.dumps(decision.latest_version)},"
+                f"{json.dumps(decision.download_url or '')},"
+                f"{json.dumps(decision.release_notes)})"
+            )
 
     def _kill(self, msg: str) -> None:
         self._js(f"alert({json.dumps(msg)})")
