@@ -27,9 +27,9 @@ yt-dlp 를 코어 엔진으로 쓰는 범용 영상 다운로더 (Windows · GUI
 바로 끝나므로 평소 속도에는 영향이 없습니다.)
 
 **1단계 — yt-dlp 옵션을 바꿔가며 재시도**
-1. 기본 다운로드
-2. 브라우저 쿠키 빌려 재시도 (로그인·연령제한 등)
-3. 브라우저 헤더(Referer/Origin/User-Agent) 위장 재시도
+1. 기본 다운로드 (분석 때 쿠키가 필요했던 영상이면 그 쿠키 포함)
+2. 브라우저 헤더(Referer/Origin/User-Agent) 위장 재시도
+3. 브라우저 쿠키 빌려 재시도 (로그인·연령제한 등) → 쿠키+헤더 조합
 4. 포맷을 `best` → `worst` 로 낮춰가며 재시도
    - 모든 시도에 `retries`/`fragment_retries`/`socket_timeout` 적용
 

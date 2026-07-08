@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""싹싹김치 다운로드 - 유튜브·인스타·비메오·틱톡 등 1800+ 사이트 지원 GUI
+"""싹싹김치 비디오 다운로더 - 유튜브·인스타·비메오·틱톡 등 1800+ 사이트 지원 GUI
 
 구조
 ----
-- 상수/유틸     : 앱 메타데이터, 디자인 토큰, 순수 함수
-- 서비스 계층  : VideoAnalyzer / Downloader / UpdateChecker (UI 비의존, 테스트 가능)
-- UI 계층      : DownloaderApp (Tk root + 카드 단위 _build_xxx + 이벤트 핸들러)
+- 상수/유틸    : 앱 메타데이터, 순수 함수
+- 서비스 계층  : VideoAnalyzer / Downloader / UpdateChecker / FfmpegInstaller / Settings
+                 (UI 비의존, 테스트 가능)
+- UI 계층      : pywebview + web_ui/index.html (디자인·상태는 JS),
+                 Api 클래스가 JS ↔ 파이썬 브리지 (window.pywebview.api)
 
-사이드 이펙트는 서비스 클래스에 격리하고, UI는 콜백을 통해 결과만 받는다.
+사이드 이펙트는 서비스 계층과 Api 에 격리하고, UI(JS)는 콜백으로 결과만 받는다.
 """
 
 from __future__ import annotations
@@ -49,39 +51,13 @@ APP_ID = "SsakSsakKimchiDownloader"
 # 넣으면 UnicodeEncodeError 로 모든 요청이 실패하므로 ASCII APP_ID 를 쓴다.
 HTTP_UA = f"{APP_ID}/{APP_VERSION}"
 
-# 첫 실행 시 받을 이용약관/면책 동의 버전. 약관을 바꾸면 올려 재동의 받는다.
+# 첫 실행 시 받을 이용약관/면책 동의 버전. 약관 본문은 web_ui/index.html 의
+# '약관 모달'에 있다. 본문을 바꾸면 이 버전을 올려 재동의 받는다.
 TOS_VERSION = "1"
 
-# 제휴 광고 배너 — 외부 광고주처럼 노출된다 (앱 소유와 무관한 일반 광고 슬롯).
-# ※ 아래 도메인을 실제 홍보 대상 홈페이지 주소로 교체하세요.
-#    UTM 파라미터로 소유관계 노출 없이 유입량만 측정할 수 있다.
+# 제휴 광고 배너 링크 (배너 이미지는 web_ui/ 에 로컬 번들 — banner.png 등).
+# UTM 파라미터로 소유관계 노출 없이 유입량만 측정할 수 있다.
 PROMO_URL = "https://www.offcut.dev/?utm_source=ssakssak_downloader&utm_medium=app_banner"
-PROMO_TEXT = "광고 ｜ OFFCUT STUDIO — 영상 제작 올인원 워크스페이스 · 자세히 보기 →"
-# 광고 배너 이미지 URL. 원격이라 재빌드 없이 소재 교체 가능 — repo 에 올리면
-# 자동 반영(없으면 텍스트 배너로 폴백).
-# 1) 하단 띠배너 banner.png — 권장 728×90 (더 크게는 728×150 까지)
-PROMO_IMAGE_URL = "https://raw.githubusercontent.com/gyqls051-arch/ssakssak-downloader/main/banner.png"
-PROMO_IMAGE_MAXW = 700   # 하단 띠배너 최대 폭
-PROMO_IMAGE_MAXH = 150   # 하단 띠배너 최대 높이 (이 박스 안에 비율 유지로 맞춤)
-# 2) 종료 시 크게 띄울 배너 exit_banner.png — 권장 600×450 (레티나 2배 1200×900)
-PROMO_EXIT_IMAGE_URL = "https://raw.githubusercontent.com/gyqls051-arch/ssakssak-downloader/main/exit_banner.png"
-PROMO_EXIT_MAXW = 600
-PROMO_EXIT_MAXH = 460
-
-# 첫 실행 면책 고지 본문.
-TOS_BODY = (
-    "본 프로그램은 사용자가 접근 권한을 가진 영상을 개인적으로 저장하기 위한 "
-    "도구입니다. 사용 전 아래 내용에 동의해 주세요.\n\n"
-    "1. 저작권 준수 책임은 전적으로 사용자에게 있습니다. 저작권자의 허락 없이 "
-    "보호되는 콘텐츠를 다운로드·복제·배포하는 행위는 법에 저촉될 수 있으며, "
-    "그에 따른 모든 법적 책임은 사용자 본인이 부담합니다.\n\n"
-    "2. 사용자는 YouTube 등 각 사이트의 이용약관을 준수해야 합니다.\n\n"
-    "3. 본 프로그램은 DRM(기술적 보호조치)이 적용된 콘텐츠는 다운로드하지 "
-    "않습니다.\n\n"
-    "4. 본 프로그램은 '있는 그대로(AS-IS)' 제공되며, 사용으로 인해 발생하는 "
-    "어떠한 직간접적 손해에 대해서도 제작자는 책임지지 않습니다.\n\n"
-    "동의하시면 '동의함'을, 동의하지 않으시면 '종료'를 눌러주세요."
-)
 
 # 업데이트 채널. 브랜드 격리를 위해 OFFCUT 과 무관한 별도(가능하면 별도 계정/조직)
 # 공개 저장소에 version.json 을 올리고 아래 <your-account> 자리를 채우세요.
@@ -113,17 +89,6 @@ FORMAT_TABLE: list[tuple[str, str]] = [
 # 시도할 수 있도록, 유튜브 전용이 아니라 모든 http(s) URL 을 받아들인다.
 URL_RE = re.compile(r"^https?://[^\s]+", re.IGNORECASE)
 
-# 자동 영상 분석 / 클립보드 자동 감지를 트리거할 대표 동영상 사이트.
-# (yt-dlp 는 이 목록과 무관하게 더 많은 사이트를 지원한다. 이 목록은 '자동'
-#  동작을 켤지 판단하는 용도일 뿐, 여기 없는 사이트도 수동 다운로드는 된다.)
-VIDEO_HOST_RE = re.compile(
-    r"(youtube\.com|youtu\.be|instagram\.com|vimeo\.com|tiktok\.com|"
-    r"twitter\.com|x\.com|facebook\.com|fb\.watch|fb\.com|twitch\.tv|"
-    r"dailymotion\.com|reddit\.com|bilibili\.com|tv\.naver\.com|"
-    r"tv\.kakao\.com|soundcloud\.com|streamable\.com)",
-    re.IGNORECASE,
-)
-
 # ── 성공률 보강용 상수 ──────────────────────────────────────
 # 일부 사이트는 우리 앱 UA(HTTP_UA)나 yt-dlp 기본 UA 를 막는다. 다운로드가
 # 실패하면 흔한 데스크톱 브라우저 UA + Referer/Origin 헤더로 한 번 더 시도한다.
@@ -153,36 +118,6 @@ MANIFEST_RE = re.compile(
 #   pip install playwright && playwright install chromium
 # (설치 안 해도 프로그램은 정상 동작 — 이 폴백만 자동으로 건너뜀)
 ENABLE_PLAYWRIGHT = not getattr(sys, "frozen", False)
-
-
-# ============================================================
-#  디자인 토큰
-# ============================================================
-
-# sv-ttk가 깔리면 Win11 네이티브 룩을 입히고, 없으면 clam 폴백.
-# 토큰은 라이트 테마 기준 보조 색상 (상태/링크 등).
-COLOR_ACCENT = "#0078d4"        # Win11 액센트
-COLOR_DANGER = "#c42b1c"
-COLOR_SUCCESS = "#0f7b0f"
-COLOR_MUTED = "#5c5c5c"
-COLOR_LOG_BG = "#fafafa"
-COLOR_LOG_BORDER = "#e1e1e1"
-
-# 싹싹김치 디자인 팔레트 (화이트톤 + 블루 액센트). tkinter 라 그라데이션/둥근
-# 모서리는 단색·근사치로 표현한다.
-DC_BG        = "#eef0f3"   # 창 배경
-DC_CARD      = "#fcfcfd"   # 카드 배경
-DC_CARD_BD   = "#e7e8ec"   # 카드 테두리
-DC_INK       = "#1d2129"   # 본문 글자
-DC_MUTED     = "#8a919c"   # 보조 글자(라벨)
-DC_MUTED2    = "#9298a2"   # 보조 글자(힌트)
-DC_BLUE      = "#2950d8"   # 액센트(프라이머리)
-DC_BLUE_DK   = "#2342c4"
-DC_SUCCESS   = "#1a7f37"
-DC_STATUS_BG = "#edeef1"   # 상태바 배경
-DC_BANNER_BG = "#28324c"   # 광고 배너 배경(그라데이션 대신 단색)
-DC_BANNER_SUB = "#b9c0d2"  # 배너 보조 글자
-DC_BANNER_CTA = "#ff5a2e"  # 배너 CTA 오렌지
 
 
 # ============================================================

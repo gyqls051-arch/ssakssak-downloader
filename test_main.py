@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""오프컷 다운로더 서비스/순수 로직 테스트 (네트워크·Tk 불필요).
+"""싹싹김치 다운로더 서비스/순수 로직 테스트 (네트워크·GUI 불필요).
 
 실행:  python -m pytest -q
-UI 계층(DownloaderApp)은 Tk 디스플레이가 필요해 제외하고, UI 비의존 서비스
-계층과 순수 함수만 검증한다."""
+UI 계층(pywebview/web_ui)은 제외하고, UI 비의존 서비스 계층과 순수 함수만
+검증한다."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import pytest
 import main
 from main import (
     Downloader, DownloadConfig, FfmpegInstaller, Settings,
-    URL_RE, VIDEO_HOST_RE, DOWNLOAD_CANCELLED,
+    URL_RE, DOWNLOAD_CANCELLED,
     build_format_selector, compare_versions, is_safe_http_url, parse_version,
 )
 
@@ -81,12 +81,6 @@ def test_url_re_accepts_any_http(url):
 def test_url_re_rejects_nonurl():
     assert not URL_RE.match("hello world")
     assert not URL_RE.match("vimeo.com/12345")     # 스킴 없음
-
-
-def test_video_host_re_matches_known_only():
-    assert VIDEO_HOST_RE.search("https://www.instagram.com/reel/abc/")
-    assert VIDEO_HOST_RE.search("https://x.com/i/status/1")
-    assert not VIDEO_HOST_RE.search("https://example.com/video")
 
 
 # ------------------- Downloader._configure_output -------------------
