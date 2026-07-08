@@ -396,12 +396,12 @@
   </div>
 </div>
 
-<!-- 종료 광고 모달 -->
-<div class="overlay" id="ovExit" onclick="if(event.target===this)closeExit()">
+<!-- 종료 광고 모달 (바깥 클릭 = 종료 취소 — 실수 종료 방지) -->
+<div class="overlay" id="ovExit" onclick="if(event.target===this)$('ovExit').classList.remove('on')">
   <div class="modal" style="width:404px">
     <div style="padding:20px 20px 0;text-align:center">
       <div style="font-size:15px;font-weight:700;color:var(--ink)">이용해 주셔서 감사합니다</div>
-      <div style="font-size:12px;color:var(--muted2);margin-top:4px">다음에 또 만나요</div>
+      <div style="font-size:12px;color:var(--muted2);margin-top:4px" id="exitSub">다음에 또 만나요</div>
     </div>
     <div style="padding:18px 20px 20px">
       <div class="exit-ad" onclick="openPromo()">
@@ -418,7 +418,11 @@
           <span class="cta">무료로 시작하기 →</span>
         </div>
       </div>
-      <button class="btn-cancel" style="width:100%;height:38px;margin-top:14px" onclick="closeExit()">닫기</button>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn-cancel" style="flex:1;height:38px;display:none" id="exitStay"
+                onclick="$('ovExit').classList.remove('on')">계속 사용</button>
+        <button class="btn-cancel" style="flex:1;height:38px" id="exitQuit" onclick="closeExit()">닫기</button>
+      </div>
     </div>
   </div>
 </div>
@@ -691,7 +695,17 @@ function closeSettings(){ $('ovSettings').classList.remove('on'); }
 async function pickFolder(){ const d = await api().pick_folder(); if(d){ S.saveDir = d; $('setPath').value = d; renderStatus(); } }
 
 /* ── 종료 광고 / 약관 ── */
-function showExit(){ $('ovExit').classList.add('on'); }      // Python → JS (창 닫기 시)
+function showExit(){        // Python → JS (창 닫기 시). 진행 중 다운로드가 있으면 경고.
+  const t = tally();
+  const busy = t.active > 0;
+  $('exitSub').textContent = busy
+    ? `⚠ 진행 중인 다운로드 ${t.active}개가 있습니다 — 종료하면 중단됩니다`
+    : '다음에 또 만나요';
+  $('exitSub').style.color = busy ? 'var(--danger)' : 'var(--muted2)';
+  $('exitStay').style.display = busy ? '' : 'none';
+  $('exitQuit').textContent = busy ? '그래도 종료' : '닫기';
+  $('ovExit').classList.add('on');
+}
 function closeExit(){ api().exit_confirmed(); }
 function openPromo(){ if(S.init.promo_url) api().open_url(S.init.promo_url); }
 // 시작 팝업: TOS 동의된 실행에서만, '오늘 그만 보기' 안 했으면 1회 노출
@@ -892,6 +906,16 @@ document.addEventListener('keydown', e => {
   if($('ovPaste').classList.contains('on')) closePaste();
   else if($('ovSettings').classList.contains('on')) closeSettings();
   else if($('ovStart').classList.contains('on')) closeStart();
+});
+
+/* ── 전역 붙여넣기: 창 어디서든 Ctrl+V 로 바로 분석 ── */
+document.addEventListener('paste', e => {
+  if(document.querySelector('.overlay.on')) return;             // 모달(약관 포함) 열림 → 무시
+  if(e.target && e.target.tagName === 'INPUT') return;          // 입력칸은 기본 동작 유지
+  const t = ((e.clipboardData && e.clipboardData.getData('text')) || '').trim();
+  if(!/^https?:\/\//i.test(t)) return;
+  if(S.smart) smartDownload(t);
+  else { openPaste(); analyzeInModal(t); }
 });
 </script>
 </body>
