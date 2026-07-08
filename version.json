@@ -1,8 +1,8 @@
 {
-  "latest_version": "1.6",
+  "latest_version": "1.7",
   "min_supported_version": "1.0",
   "killswitch": false,
   "killswitch_message": "사이트 정책 변경 대응 중입니다. 잠시 후 새 버전을 배포하겠습니다.",
   "download_url": "https://github.com/gyqls051-arch/ssakssak-downloader/releases/latest",
-  "release_notes": "🥬 새 김치 로고·앱 아이콘 · OFFCUT STUDIO 제휴 안내(하단 배너·시작 팝업) · 소소한 정리"
+  "release_notes": "🆕 새 버전 알림 배너 · Ctrl+V 붙여넣기 · 종료 시 진행 중 다운로드 경고 · MP3 안정성 수정 · 🎨 제휴 배너 새 디자인"
 }
