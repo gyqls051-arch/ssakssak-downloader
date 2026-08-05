@@ -491,7 +491,7 @@ class Downloader:
     def _base_opts(self, cfg: DownloadConfig) -> dict:
         """모든 시도가 공유하는 기본 yt-dlp 옵션 (포맷/쿠키/헤더는 시도별로 덮음)."""
         opts: dict = {
-            "outtmpl": os.path.join(cfg.out_dir, "%(title)s [%(id)s].%(ext)s"),
+            "outtmpl": os.path.join(cfg.out_dir, "%(title)s.%(ext)s"),
             "noplaylist": False,
             "progress_hooks": [self._progress_hook],
             "postprocessor_hooks": [self._postprocessor_hook],
