@@ -46,6 +46,7 @@ REM     (개인 소스 실행에서만 동작. 빌드 PC 에 playwright 가 깔�
     --windowed ^
     --name "SsakSsakKimchiDownloader" ^
     --icon "app.ico" ^
+    --version-file "version_info.txt" ^
     --add-data "web_ui;web_ui" ^
     --collect-all webview ^
     --collect-all pythonnet ^
@@ -61,6 +62,7 @@ echo.
 echo ============================================================
 echo  Build complete!
 echo  Output: dist\SsakSsakKimchiDownloader.exe
+echo  Next: run build_installer.bat to create the installer
 echo ============================================================
 echo.
 pause
