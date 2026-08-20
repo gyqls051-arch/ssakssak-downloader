@@ -1,8 +1,8 @@
 {
-  "latest_version": "1.7",
+  "latest_version": "1.8",
   "min_supported_version": "1.0",
   "killswitch": false,
   "killswitch_message": "사이트 정책 변경 대응 중입니다. 잠시 후 새 버전을 배포하겠습니다.",
   "download_url": "https://github.com/gyqls051-arch/ssakssak-downloader/releases/latest",
-  "release_notes": "🆕 새 버전 알림 배너 · Ctrl+V 붙여넣기 · 종료 시 진행 중 다운로드 경고 · MP3 안정성 수정 · 🎨 제휴 배너 새 디자인"
+  "release_notes": "🔧 유튜브 다운로드 복구 (차단 방식 변경 대응) · ⚡ 엔진 자동 업데이트 — 앞으로 유튜브가 바뀌어도 재설치 불필요 · 🎯 화질 목록 정확도 개선 · 🧹 임시 파일이 저장 폴더에 남던 문제 수정"
 }
