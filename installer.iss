@@ -27,7 +27,9 @@ PrivilegesRequired=lowest
 DefaultDirName={autopf}\SsakSsakKimchiDownloader
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=싹싹김치다운로더_설치_v{#MyAppVersion}
+; 깃허브 릴리스는 첨부 파일명을 ASCII 로 강제 변환한다. 한글 이름을 쓰면
+; '_._v1.8.exe' 처럼 뭉개져서 사용자가 받을 때 정상 파일로 안 보인다.
+OutputBaseFilename=SsakSsakKimchiDownloader-Setup-v{#MyAppVersion}
 SetupIconFile=app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
