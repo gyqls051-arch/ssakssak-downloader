@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import logging
 import logging.handlers
@@ -23,7 +25,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +36,96 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+# ============================================================
+#  다운로드 엔진(yt-dlp) 선택  ※ 반드시 `import yt_dlp` 보다 앞
+# ============================================================
+# yt-dlp 는 유튜브 변경을 따라가야 해서 자주 갱신해야 하고, 버전이 '되냐 안 되냐'
+# 뿐 아니라 '화질'까지 좌우한다(실측: 2026.03 → 360p, 2026.08 → 1080p).
+# exe 안에만 박아두면 갱신할 때마다 사용자가 설치본을 통째로 다시 받아야 하므로,
+# 엔진을 폴더로 빼서 앱이 스스로 갱신한다. 후보 중 '가장 새 버전'을 쓴다.
+#   1) exe 옆 engine\        — 설치 시 깔린 기본본 (Program Files=쓰기 불가)
+#   2) %LOCALAPPDATA%\앱\engine — 앱이 내려받은 최신본 (쓰기 가능)
+#   3) 위가 다 없으면 exe 안에 번들된 yt-dlp (안전망)
+_ENGINE_APP_ID = "SsakSsakKimchiDownloader"   # APP_ID 와 동일 (아래에서 검증)
+# 엔진 폴더의 버전 표기 파일. 점으로 시작하는 이름은 설치 프로그램(Inno Setup)의
+# 와일드카드에서 누락될 수 있어 평범한 이름을 쓴다.
+ENGINE_VERSION_FILE = "engine_version.txt"
+
+
+def _engine_roots() -> list[Path]:
+    """엔진 폴더 후보들. 존재 여부는 확인하지 않는다."""
+    roots: list[Path] = []
+    if getattr(sys, "frozen", False):
+        roots.append(Path(sys.executable).resolve().parent / "engine")
+    else:
+        roots.append(Path(__file__).resolve().parent / "engine")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        roots.append(Path(local) / _ENGINE_APP_ID / "engine")
+    return roots
+
+
+def _engine_version(d: Path) -> tuple[int, ...]:
+    """엔진 폴더의 버전 표기를 비교 가능한 튜플로. 없거나 깨졌으면 빈 튜플."""
+    try:
+        raw = (d / ENGINE_VERSION_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ()
+    out: list[int] = []
+    for part in raw.split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
+def _pick_engine() -> Path | None:
+    """후보 중 yt_dlp 가 실제로 들어 있고 버전이 가장 높은 폴더."""
+    best: Path | None = None
+    best_v: tuple[int, ...] = ()
+    for d in _engine_roots():
+        try:
+            if not (d / "yt_dlp" / "version.py").is_file():
+                continue
+        except OSError:
+            continue
+        v = _engine_version(d)
+        if v > best_v:
+            best, best_v = d, v
+    return best
+
+
+class _EngineFinder:
+    """yt_dlp 임포트만 가로채 지정한 엔진 폴더에서 읽게 하는 메타 경로 파인더.
+
+    PyInstaller 배포본에서는 sys.path 를 앞에 끼워 넣어도 소용이 없다
+    (FrozenImporter 가 sys.meta_path 앞쪽에서 번들 모듈을 먼저 집어간다).
+    그래서 meta_path 맨 앞에서 yt_dlp* 만 낚아채 엔진 폴더로 돌린다.
+    엔진 폴더가 없으면 이 파인더를 아예 설치하지 않아 번들본이 그대로 쓰인다."""
+
+    def __init__(self, root: Path):
+        self._root = [str(root)]
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != "yt_dlp" and not fullname.startswith("yt_dlp."):
+            return None
+        from importlib.machinery import PathFinder
+        # 최상위는 엔진 폴더에서, 하위 모듈은 부모의 __path__(=엔진 폴더) 에서.
+        return PathFinder.find_spec(
+            fullname, self._root if fullname == "yt_dlp" else path, target)
+
+
+def _activate_engine() -> str | None:
+    root = _pick_engine()
+    if root is None:
+        return None
+    sys.meta_path.insert(0, _EngineFinder(root))
+    return str(root)
+
+
+_ENGINE_PATH = _activate_engine()
 
 import webview
 import yt_dlp
@@ -42,10 +136,13 @@ import yt_dlp
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
+# 엔진 로더는 import 순서상 APP_ID 보다 먼저 정의돼야 해서 문자열을 따로 갖는다.
+# 둘이 어긋나면 갱신본을 못 찾으므로 여기서 못 박아 둔다.
+assert _ENGINE_APP_ID == APP_ID, "엔진 로더의 APP_ID 가 어긋났습니다"
 
 # HTTP User-Agent 는 반드시 ASCII 여야 한다(헤더는 latin-1). 한글 APP_TITLE 을
 # 넣으면 UnicodeEncodeError 로 모든 요청이 실패하므로 ASCII APP_ID 를 쓴다.
@@ -99,6 +196,22 @@ BROWSER_UA = (
 
 # 멈춘 연결에 무한 대기하지 않게 하는 네트워크 타임아웃(초).
 SOCKET_TIMEOUT = 30
+
+# ── 유튜브 PO Token 공급자 (SABR 대응) ─────────────────────
+# 유튜브가 SABR 스트리밍을 강제하면서, PO Token 없이는 어떤 재생 클라이언트로도
+# 실제 스트림을 받을 수 없다(포맷 목록이 비거나, 받아도 10MB 즈음 403 Forbidden).
+# bgutil POT 공급자를 로컬 HTTP 서버로 띄우고 yt-dlp 플러그인이 토큰을 받아온다.
+# 번들 구성: potprovider/{node.exe, server/build/main.js, server/node_modules, plugin/}
+POT_PORT = 4416
+POT_BASE_URL = f"http://127.0.0.1:{POT_PORT}"
+POT_STARTUP_TIMEOUT = 25.0        # 서버 기동 대기 상한(초)
+
+# 유튜브 재생 클라이언트 재시도 순서. None = yt-dlp 기본 선택(화질 목록이 가장
+# 풍부하지만, 종종 스트림이 10MB 즈음 403 으로 끊긴다). 그다음부터는 실제
+# 다운로드가 끝까지 되는 걸 확인한 클라이언트들로 내려간다.
+# 어떤 게 살아 있는지는 유튜브가 수시로 바꾸므로 '하나 고정'이 아니라
+# 순서대로 시도하는 사다리로 둔다.
+YOUTUBE_CLIENT_LADDER: list[str | None] = [None, "tv_simply", "android", "tv", "web"]
 
 # DRM(기술적 보호조치) 보호 콘텐츠로 보이는 오류 키워드. 감지되면 우회를
 # 절대 시도하지 않고(불법) 즉시 명확히 안내한 뒤 중단한다.
@@ -222,6 +335,15 @@ def ytdlp_cache_dir() -> str:
                / APP_ID / "ytdlp-cache")
 
 
+def download_temp_root() -> Path:
+    """다운로드 중간 산출물(.part, 조각, 병합 전 트랙)을 두는 임시 폴더.
+
+    저장 폴더에 바로 쓰면 재시도로 버려진 .part 가 사용자 폴더에 그대로 남는다
+    (유튜브는 높은 화질부터 시도하다 실패하는 일이 잦아 더 두드러진다).
+    최종 파일만 저장 폴더로 옮겨지도록 중간물은 여기에 격리한다."""
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "tmp"
+
+
 def config_path() -> Path:
     """사용자 설정(config.json) 저장 위치. 로그/ffmpeg 캐시와 같은 앱 폴더."""
     return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "config.json"
@@ -253,6 +375,299 @@ def find_ffmpeg() -> str | None:
             for sub in guess.rglob("ffmpeg.exe"):
                 return str(sub.parent)
     return None
+
+
+def is_youtube(url: str) -> bool:
+    """유튜브(단축·임베드 도메인 포함) URL 인지. POT 서버는 유튜브에만 필요하다."""
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+    except ValueError:
+        return False
+    host = host.split("@")[-1].split(":")[0]
+    return (host in ("youtu.be", "youtube.com", "m.youtube.com")
+            or host.endswith(".youtube.com")
+            or host.endswith(".youtube-nocookie.com"))
+
+
+def potprovider_dir() -> Path | None:
+    """번들된 PO Token 공급자 폴더를 찾는다. 번들 안 돼 있으면 None."""
+    bases: list[Path] = []
+    if getattr(sys, "frozen", False):
+        bases.append(Path(getattr(sys, "_MEIPASS", "")))
+        bases.append(Path(sys.executable).parent)
+    else:
+        bases.append(Path(__file__).parent)
+    for b in bases:
+        d = b / "potprovider"
+        if (d / "node.exe").exists() and (d / "server" / "build" / "main.js").exists():
+            return d
+    return None
+
+
+class PotProvider:
+    """번들 node.exe 로 PO Token 서버를 띄우고 수명을 관리한다(앱당 1개).
+
+    - 유튜브 URL 을 만났을 때만 지연 기동한다(다른 사이트만 쓰면 아예 안 뜬다).
+    - 이미 응답하는 서버가 있으면(앱 중복 실행 등) 그걸 재사용한다.
+    - 앱 종료 시 stop() 으로 정리한다.
+    """
+
+    def __init__(self) -> None:
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._dir = potprovider_dir()
+        self._ready = False
+        if self._dir:
+            self._register_plugin()
+        else:
+            log.warning("POT provider not bundled — 유튜브 다운로드가 막힐 수 있음")
+
+    @property
+    def available(self) -> bool:
+        return self._dir is not None
+
+    def _register_plugin(self) -> None:
+        """번들 플러그인 폴더를 yt-dlp 플러그인 경로에 등록(pip 설치 불필요).
+        PyInstaller 배포본에선 네임스페이스 패키지 자동탐색이 안 되므로 필수."""
+        try:
+            import yt_dlp.globals as g
+            path = str(self._dir / "plugin")            # type: ignore[operator]
+            if path not in g.plugin_dirs.value:
+                g.plugin_dirs.value = [*g.plugin_dirs.value, path]
+                log.info("POT plugin dir registered: %s", path)
+        except Exception:
+            log.exception("failed to register POT plugin dir")
+
+    @staticmethod
+    def _ping(timeout: float = 1.0) -> bool:
+        try:
+            with urllib.request.urlopen(f"{POT_BASE_URL}/ping", timeout=timeout):
+                return True
+        except Exception:
+            return False
+
+    def ensure_running(self) -> bool:
+        """서버가 응답 가능한 상태임을 보장. 실패해도 예외 없이 False 만 돌려주고
+        다운로드는 계속 진행한다(유튜브 외 사이트는 토큰이 필요 없으므로)."""
+        if self._ready and self._ping():
+            return True
+        with self._lock:
+            if self._ping():                 # 이미 떠 있으면 재사용
+                self._ready = True
+                return True
+            if not self._dir:
+                return False
+            self._spawn()
+            deadline = time.monotonic() + POT_STARTUP_TIMEOUT
+            while time.monotonic() < deadline:
+                if self._ping():
+                    self._ready = True
+                    log.info("POT server ready")
+                    return True
+                if self._proc is not None and self._proc.poll() is not None:
+                    log.error("POT server exited early (code %s)",
+                              self._proc.returncode)
+                    return False
+                time.sleep(0.3)
+            log.error("POT server startup timed out")
+            return False
+
+    def _spawn(self) -> None:
+        """node.exe 로 서버를 백그라운드 기동(콘솔 창 안 뜨게)."""
+        if self._dir is None:
+            return
+        srv = self._dir / "server"
+        try:
+            self._proc = subprocess.Popen(
+                [str(self._dir / "node.exe"), str(srv / "build" / "main.js"),
+                 "--port", str(POT_PORT)],
+                cwd=str(srv),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            log.info("POT server spawned (pid %s)", self._proc.pid)
+        except OSError:
+            log.exception("failed to spawn POT server")
+            self._proc = None
+
+    def stop(self) -> None:
+        """앱 종료 시 서버 프로세스 정리(좀비 node.exe 방지)."""
+        with self._lock:
+            proc, self._proc, self._ready = self._proc, None, False
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        log.info("POT server stopped")
+
+
+# 앱 전역 인스턴스 (import 시점엔 서버를 띄우지 않는다 — ensure_running() 에서 지연 기동)
+POT = PotProvider()
+
+
+def youtube_extractor_args(client: str | None = None) -> dict:
+    """유튜브용 yt-dlp extractor_args — POT 서버 주소만 넘긴다.
+
+    player_client 는 일부러 건드리지 않는다. 직접 고른 클라이언트
+    (tv_simply/tv/web/mweb)는 토큰이 있어도 화질이 360p 이하로 잘리거나
+    아예 포맷이 비었고, yt-dlp 기본 선택에 맡겨야 144p~2160p 가 다 나온다.
+    어떤 클라이언트가 살아 있는지는 유튜브 사정에 따라 계속 바뀌므로,
+    client=None(기본)으로 먼저 시도하고 실패하면 사다리를 내려간다."""
+    args: dict = {"youtubepot-bgutilhttp": {"base_url": [POT_BASE_URL]}}
+    if client:
+        args["youtube"] = {"player_client": [client]}
+    return args
+
+
+# ============================================================
+#  엔진(yt-dlp) 자동 갱신
+# ============================================================
+
+# yt-dlp 나이틀리는 PyPI 에 사전배포(pre-release)로 올라온다. 안정판만 보면
+# 몇 주씩 뒤처져서 유튜브 변경을 못 따라가므로 사전배포까지 본다.
+YTDLP_PYPI_URL = "https://pypi.org/pypi/yt-dlp/json"
+ENGINE_CHECK_INTERVAL = 12 * 3600      # 확인 주기(초)
+ENGINE_NET_TIMEOUT = 20                # 갱신 통신 타임아웃(초)
+ENGINE_MAX_WHEEL = 40 * 1024 * 1024    # 휠 크기 상한(메모리 보호)
+
+
+def engine_update_dir() -> Path:
+    """앱이 내려받은 엔진을 두는 쓰기 가능 폴더."""
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "engine"
+
+
+def engine_state_path() -> Path:
+    """마지막 확인 시각 기록 (매 실행마다 네트워크를 두드리지 않기 위해)."""
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "engine.json"
+
+
+class EngineUpdater:
+    """yt-dlp 를 백그라운드로 최신화한다.
+
+    받아둔 엔진은 '다음 실행'부터 쓰인다(실행 중인 모듈을 갈아끼우지 않는다).
+    실패해도 조용히 넘어간다 — 갱신은 부가 기능이고, 실패해도 기존 엔진으로
+    계속 동작해야 한다."""
+
+    def __init__(self, current_version: str):
+        self._current = current_version
+
+    def start_async(self) -> None:
+        """앱 시작 직후 호출. UI 를 막지 않도록 데몬 스레드에서 돈다."""
+        threading.Thread(target=self._safe_run, name="engine-updater",
+                         daemon=True).start()
+
+    def _safe_run(self) -> None:
+        try:
+            self.run()
+        except Exception:
+            log.exception("engine update failed")
+
+    def _due(self) -> bool:
+        try:
+            data = json.loads(engine_state_path().read_text(encoding="utf-8"))
+            last = float(data.get("last_check", 0))
+        except (OSError, ValueError, TypeError):
+            return True
+        return (time.time() - last) >= ENGINE_CHECK_INTERVAL
+
+    def _stamp(self) -> None:
+        try:
+            p = engine_state_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"last_check": time.time()}), encoding="utf-8")
+        except OSError:
+            log.warning("engine state 기록 실패", exc_info=True)
+
+    @staticmethod
+    def _latest_from_pypi() -> tuple[str, str] | None:
+        """(버전, 휠 URL). 사전배포 포함 최신. 실패하면 None."""
+        req = urllib.request.Request(YTDLP_PYPI_URL,
+                                     headers={"User-Agent": HTTP_UA})
+        with urllib.request.urlopen(req, timeout=ENGINE_NET_TIMEOUT) as resp:
+            data = json.loads(resp.read(4 * 1024 * 1024).decode("utf-8"))
+        best_v: tuple[int, ...] = ()
+        best: tuple[str, str] | None = None
+        for ver, files in (data.get("releases") or {}).items():
+            # 나이틀리는 '2026.8.18.122307.dev0' 처럼 .dev0 꼬리표가 붙는다.
+            # 엄격하게 int() 로 파싱하면 나이틀리가 통째로 걸러져서 몇 주 뒤진
+            # 안정판만 잡히므로, 숫자 아닌 조각을 0 으로 떨구는 parse_version 을 쓴다.
+            tv = parse_version(str(ver))
+            if tv <= best_v:
+                continue
+            for f in files or []:
+                if (f.get("packagetype") == "bdist_wheel"
+                        and not f.get("yanked")
+                        and isinstance(f.get("url"), str)):
+                    best_v, best = tv, (str(ver), f["url"])
+                    break
+        return best
+
+    def run(self) -> None:
+        if not self._due():
+            return
+        latest = self._latest_from_pypi()
+        self._stamp()
+        if latest is None:
+            return
+        version, url = latest
+        if compare_versions(version, self._current) <= 0:
+            log.info("engine up to date (%s)", self._current)
+            return
+
+        log.info("engine update: %s -> %s", self._current, version)
+        req = urllib.request.Request(url, headers={"User-Agent": HTTP_UA})
+        with urllib.request.urlopen(req, timeout=ENGINE_NET_TIMEOUT) as resp:
+            blob = resp.read(ENGINE_MAX_WHEEL + 1)
+        if len(blob) > ENGINE_MAX_WHEEL:
+            log.warning("engine wheel too large - skipped")
+            return
+        self._install(blob, version)
+
+    @staticmethod
+    def _install(wheel_bytes: bytes, version: str) -> None:
+        """휠에서 yt_dlp/ 만 꺼내 원자적으로 교체한다."""
+        dest = engine_update_dir()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        staging = dest.with_name(dest.name + ".new")
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True, exist_ok=True)
+        root = staging.resolve()
+
+        with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as z:
+            for name in z.namelist():
+                # yt_dlp/ 하위만. 상위참조/절대경로는 무시(zip slip 방지).
+                if not name.startswith("yt_dlp/") or name.endswith("/"):
+                    continue
+                target = (staging / name).resolve()
+                if not str(target).startswith(str(root)):
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(name) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+
+        if not (staging / "yt_dlp" / "version.py").is_file():
+            shutil.rmtree(staging, ignore_errors=True)
+            log.warning("engine wheel 에 yt_dlp 가 없음 - 취소")
+            return
+        (staging / ENGINE_VERSION_FILE).write_text(version, encoding="utf-8")
+
+        old = dest.with_name(dest.name + ".old")
+        shutil.rmtree(old, ignore_errors=True)
+        try:
+            if dest.exists():
+                dest.rename(old)              # 실행 중이면 실패할 수 있다
+            staging.rename(dest)
+        except OSError:
+            log.warning("engine 교체 실패 - 다음 실행에서 재시도", exc_info=True)
+            shutil.rmtree(staging, ignore_errors=True)
+            return
+        shutil.rmtree(old, ignore_errors=True)  # 잠겨 있으면 다음 실행에 정리
+        log.info("engine updated to %s (다음 실행부터 적용)", version)
 
 
 def looks_like_login_error(err: str) -> bool:
@@ -316,6 +731,10 @@ class VideoAnalyzer:
     def probe(self, url: str, cookies_browser: str | None = None) -> AnalysisResult:
         opts: dict = {"quiet": True, "no_warnings": True, "skip_download": True,
                       "cachedir": ytdlp_cache_dir()}
+        # 분석 단계에서도 토큰이 있어야 실제 화질 목록이 채워진다.
+        if is_youtube(url):
+            POT.ensure_running()
+            opts["extractor_args"] = youtube_extractor_args()
         if cookies_browser:
             # (browser, profile, keyring, container) 4-튜플이어야 한다.
             opts["cookiesfrombrowser"] = (cookies_browser, None, None, None)
@@ -351,8 +770,18 @@ class VideoAnalyzer:
 
     @staticmethod
     def _heights(info: dict) -> list[int]:
+        """실제 영상 트랙의 세로 해상도만 모은다.
+
+        미리보기 스토리보드(mhtml, 48x27 등)도 height 를 갖고 있어서 그대로
+        쓰면 '27p·45p·90p' 같은 가짜 화질이 목록에 뜬다. 영상 코덱이 있는
+        포맷만 센다."""
         formats = info.get("formats") or []
-        hs = {f.get("height") for f in formats if isinstance(f.get("height"), int)}
+        hs = {
+            f["height"] for f in formats
+            if isinstance(f.get("height"), int)
+            and f.get("vcodec") not in (None, "none")
+            and f.get("ext") != "mhtml"
+        }
         return sorted(hs)
 
     @staticmethod
@@ -406,6 +835,10 @@ class Downloader:
         self._on_status = on_status or (lambda _msg: None)
         # 취소 신호. run() 시작 시 clear, cancel() 시 set.
         self._cancel_event = threading.Event()
+        # 이번 다운로드 전용 임시 폴더 (run() 이 만들고 지운다).
+        self._tmpdir: str | None = None
+        # 최종 저장 폴더 (후처리 훅이 임시 경로를 최종 경로로 바꿀 때 쓴다).
+        self._out_dir: str | None = None
 
     def cancel(self) -> None:
         """진행 중인 다운로드를 다음 진행률 콜백 시점에 중단시킨다."""
@@ -428,8 +861,23 @@ class Downloader:
         if vid:
             # 후처리 결과의 최종 경로. 진행률 훅이 잡은 임시 조각 파일명 대신
             # 이걸 써야 '재생/폴더 열기'가 올바른 최종 파일을 가리킨다.
-            filepath = info.get("filepath") or None
-            self._on_item_done(vid, filepath)
+            self._on_item_done(vid, self._final_path(info.get("filepath")))
+
+    def _final_path(self, filepath: str | None) -> str | None:
+        """후처리 훅이 알려준 경로를 '옮겨진 뒤'의 최종 경로로 바꾼다.
+
+        중간 산출물을 임시 폴더로 뺐기 때문에(paths.temp) 훅 시점의 경로는
+        아직 임시 폴더를 가리킨다. yt-dlp 는 그 뒤 저장 폴더로 파일을 옮기고
+        임시 폴더는 run() 이 지우므로, 그대로 UI 에 넘기면 '재생/폴더 열기'가
+        사라진 파일을 가리키게 된다. 파일명만 떼어 저장 폴더에 붙인다."""
+        if not filepath or not self._out_dir or not self._tmpdir:
+            return filepath
+        try:
+            if os.path.normcase(os.path.dirname(os.path.abspath(filepath))) ==                os.path.normcase(os.path.abspath(self._tmpdir)):
+                return os.path.join(self._out_dir, os.path.basename(filepath))
+        except (OSError, ValueError):
+            pass
+        return filepath
 
     def run(self, cfg: DownloadConfig) -> None:
         """단계적 폴백으로 다운로드 성공률을 높인다.
@@ -440,6 +888,24 @@ class Downloader:
                        yt-dlp 에 재투입. (옵트인 시) Playwright 로 네트워크 가로채기.
         DRM 감지 시: 우회하지 않고 즉시 안내 후 중단."""
         self._cancel_event.clear()
+        self._out_dir = cfg.out_dir
+        # 동시 다운로드끼리 섞이지 않도록 이번 실행만의 하위 폴더를 쓴다.
+        tmp_root = download_temp_root()
+        try:
+            tmp_root.mkdir(parents=True, exist_ok=True)
+            self._tmpdir = tempfile.mkdtemp(prefix="dl-", dir=str(tmp_root))
+        except OSError:
+            log.warning("임시 폴더 생성 실패 — 저장 폴더를 그대로 사용", exc_info=True)
+            self._tmpdir = None
+        try:
+            self._run_inner(cfg)
+        finally:
+            if self._tmpdir:
+                shutil.rmtree(self._tmpdir, ignore_errors=True)
+                self._tmpdir = None
+
+    def _run_inner(self, cfg: DownloadConfig) -> None:
+        """run() 본체. 임시 폴더 정리는 run() 이 책임진다."""
         base = self._base_opts(cfg)
         last_err: str | None = None
 
@@ -491,7 +957,10 @@ class Downloader:
     def _base_opts(self, cfg: DownloadConfig) -> dict:
         """모든 시도가 공유하는 기본 yt-dlp 옵션 (포맷/쿠키/헤더는 시도별로 덮음)."""
         opts: dict = {
-            "outtmpl": os.path.join(cfg.out_dir, "%(title)s.%(ext)s"),
+            "outtmpl": "%(title)s.%(ext)s",
+            # home=최종 저장 폴더, temp=중간 산출물 폴더 (버려진 .part 격리)
+            "paths": {"home": cfg.out_dir,
+                      "temp": self._tmpdir or cfg.out_dir},
             "noplaylist": False,
             "progress_hooks": [self._progress_hook],
             "postprocessor_hooks": [self._postprocessor_hook],
@@ -505,6 +974,11 @@ class Downloader:
         }
         if cfg.ffmpeg_dir:
             opts["ffmpeg_location"] = cfg.ffmpeg_dir
+        # 유튜브는 PO Token 이 없으면 스트림 자체를 안 준다 → 서버 지연 기동.
+        if is_youtube(cfg.url):
+            if not POT.ensure_running():
+                log.warning("POT server unavailable — 유튜브 다운로드가 실패할 수 있음")
+            opts["extractor_args"] = youtube_extractor_args()
         self._configure_output(cfg, opts)
         return opts
 
@@ -537,7 +1011,19 @@ class Downloader:
         first: dict = {"format": fmt}
         if cfg.cookies_browser:
             first["cookiesfrombrowser"] = (cfg.cookies_browser, None, None, None)
-        plan.append(("기본 다운로드", first))
+
+        if is_youtube(cfg.url):
+            # 유튜브는 '어떤 재생 클라이언트로 물어보느냐'가 성패를 가른다.
+            # 기본 선택은 화질 목록이 가장 풍부하지만 스트림이 403 으로 끊기는
+            # 경우가 잦고, tv_simply 등은 끝까지 받아지는 대신 화질이 적게
+            # 잡힐 때가 있다. 그래서 화질 좋은 쪽부터 순서대로 내려간다.
+            for client in YOUTUBE_CLIENT_LADDER:
+                extra = {**first, "extractor_args": youtube_extractor_args(client)}
+                label = ("기본 다운로드" if client is None
+                         else f"다른 방식으로 재시도 ({client})")
+                plan.append((label, extra))
+        else:
+            plan.append(("기본 다운로드", first))
         # 2) 브라우저 헤더 (쿠키 없이!) — 쿠키 DB 가 잠겨도(브라우저 실행 중) 영향 없음.
         #    쿠키 시도가 실패해도 비-쿠키 시도들은 항상 살아 있도록 분리한다.
         plan.append(("브라우저 헤더로 재시도", {"format": fmt, "http_headers": headers}))
@@ -1261,6 +1747,7 @@ class Api:
         self._js("showExit()")
 
     def exit_confirmed(self) -> None:
+        POT.stop()
         try:
             self._window.destroy()
         except Exception:
@@ -1373,6 +1860,15 @@ class Api:
 def main() -> None:
     log_file = setup_logging()
     log.info("starting %s v%s (pywebview), log=%s", APP_TITLE, APP_VERSION, log_file)
+    log.info("engine: yt-dlp %s (%s)", yt_dlp.version.__version__,
+             _ENGINE_PATH or "exe 번들")
+    # POT 공급자 등록은 import 시점(로깅 설정 전)에 끝나서 그때 로그가 사라진다.
+    # 유튜브가 안 될 때 제일 먼저 볼 정보라 여기서 한 번 더 남긴다.
+    log.info("POT 공급자: %s",
+             potprovider_dir() or "없음 — 유튜브 다운로드가 막힐 수 있음")
+    # 유튜브 변경을 따라가려면 엔진이 최신이어야 한다. 백그라운드로 확인하고
+    # 받아둔 건 다음 실행부터 적용된다(지금 다운로드에는 영향 없음).
+    EngineUpdater(yt_dlp.version.__version__).start_async()
     api = Api()
     window = webview.create_window(
         f"{APP_TITLE}",
@@ -1388,6 +1884,9 @@ def main() -> None:
     except Exception:
         log.exception("webview start failed")
         raise
+    finally:
+        # 창을 어떻게 닫았든(X 버튼·강제종료 경로 포함) node.exe 를 남기지 않는다.
+        POT.stop()
 
 
 if __name__ == "__main__":

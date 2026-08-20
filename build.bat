@@ -8,7 +8,7 @@ REM ============================================================
 set "PY=py -3.13"
 
 echo.
-echo [1/4] Checking Python 3.13...
+echo [1/5] Checking Python 3.13...
 %PY% --version >nul 2>&1 || (
     echo   [ERROR] Python 3.13 is not installed.
     echo   Install from https://www.python.org/downloads/ then retry.
@@ -17,12 +17,28 @@ echo [1/4] Checking Python 3.13...
 )
 
 echo.
-echo [2/4] Installing dependencies (pyinstaller + requirements.txt)...
+echo [2/5] Installing dependencies (pyinstaller + requirements.txt)...
 %PY% -m pip install --upgrade pyinstaller || goto :error
 %PY% -m pip install --upgrade -r requirements.txt || goto :error
+REM  yt-dlp only: take the nightly channel. YouTube changes break extraction
+REM  constantly and the stable channel lags by weeks. Measured 2026-08:
+REM  2026.03.17 capped at 360p, 2026.08.18 delivered 1080p on the same video.
+%PY% -m pip install --pre --upgrade yt-dlp || goto :error
 
 echo.
-echo [3/4] Checking ffmpeg.exe bundling...
+echo [3/5] Preparing side folders (potprovider\, engine\)...
+REM  YouTube now enforces SABR streaming: without a PO token no player client
+REM  returns a usable stream (403 after ~10MB). The provider needs a JS runtime,
+REM  so Node.js + the bgutil server are shipped next to the exe (not inside it,
+REM  to keep onefile startup fast).
+REM  engine\ holds yt-dlp itself, split out of the exe so the app can update it
+REM  on its own -- YouTube changes break extraction (and cap quality) constantly,
+REM  and users should not have to reinstall a 200MB setup for that.
+REM  Both folders are installed next to the exe by installer.iss.
+%PY% prepare_bundle.py || goto :error
+
+echo.
+echo [4/5] Checking ffmpeg.exe bundling...
 set "FFMPEG_BUNDLE="
 if exist "ffmpeg.exe" (
     set "FFMPEG_BUNDLE=--add-binary ffmpeg.exe;."
@@ -32,7 +48,7 @@ if exist "ffmpeg.exe" (
 )
 
 echo.
-echo [4/4] Building exe... (this takes 1-2 minutes)
+echo [5/5] Building exe... (this takes 1-2 minutes)
 REM  --add-data web_ui        : 디자인 HTML/CSS 번들 (UI 본체)
 REM  --collect-all webview    : pywebview + bottle 등
 REM  --collect-all pythonnet / clr_loader : WebView2(.NET) 백엔드 로더

@@ -24,3 +24,9 @@ ffmpeg-tmp.zip
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# build.bat(prepare_bundle.py) 이 생성하는 곁폴더 — 빌드 산출물이라 깃에 안 올린다.
+#   potprovider/ : 유튜브 PO Token 생성기 (Node.js + bgutil 서버 + 플러그인)
+#   engine/      : yt-dlp 본체 (앱이 스스로 갱신하도록 exe 밖으로 뺀 것)
+potprovider/
+engine/

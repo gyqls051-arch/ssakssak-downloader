@@ -7,7 +7,7 @@
 
 ; 새 버전 배포 시 여기 버전만 올리면 됨 (version.json 과 맞출 것)
 #define MyAppName "싹싹김치 다운로더"
-#define MyAppVersion "1.7"
+#define MyAppVersion "1.8"
 #define MyAppPublisher "싹싹김치 패밀리"
 #define MyAppURL "https://github.com/gyqls051-arch/ssakssak-downloader"
 #define MyAppExeName "SsakSsakKimchiDownloader.exe"
@@ -44,6 +44,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; 유튜브 PO Token 공급자 (Node.js 런타임 + 토큰 서버 + yt-dlp 플러그인).
+; 유튜브가 SABR 을 강제해서 이게 없으면 유튜브 다운로드가 통째로 막힌다.
+; exe 안에 넣지 않고 옆 폴더로 두는 이유: onefile 은 실행마다 압축을 풀어서
+; 180MB 를 넣으면 시작이 크게 느려진다. build.bat 이 potprovider\ 를 만든다.
+Source: "potprovider\*"; DestDir: "{app}\potprovider"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 다운로드 엔진(yt-dlp). exe 밖에 두어야 앱이 스스로 최신으로 갱신할 수 있다.
+; 갱신본은 %LOCALAPPDATA%\SsakSsakKimchiDownloader\engine 에 받고, 앱은 둘 중
+; 더 새 버전을 골라 쓴다. 여기 깔리는 건 '설치 시점의 기본 엔진'.
+Source: "engine\*"; DestDir: "{app}\engine"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 ; 시작 메뉴 + 바탕화면 바로가기를 한글 이름으로 생성
