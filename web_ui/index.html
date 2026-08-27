@@ -252,6 +252,12 @@
   .updbar .go{flex:none;height:28px;padding:0 14px;border-radius:5px;border:none;cursor:default;
               background:var(--accent);color:#fff;font-size:12px;font-weight:700;font-family:inherit}
   .updbar .go:hover{filter:brightness(1.06)}
+  .updbar .go:disabled{opacity:.5;filter:none}
+  /* 자동 업데이트 진행률 — 받는 동안에만 보인다 */
+  .updbar .bar{flex:none;display:none;width:110px;height:5px;border-radius:3px;
+               background:#FFD9B8;overflow:hidden}
+  .updbar.busy .bar{display:block}
+  .updbar .bar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
 
   /* 토스트 */
   #toast{position:fixed;left:50%;bottom:42px;transform:translateX(-50%);z-index:90;
@@ -310,8 +316,9 @@
   <!-- 새 버전 알림 배너 -->
   <div class="updbar" id="updBar">
     <span class="t" id="updText"></span>
-    <button class="go" id="updGo">다운로드</button>
-    <button class="mx" onclick="$('updBar').classList.remove('on')">✕</button>
+    <span class="bar"><i id="updFill"></i></span>
+    <button class="go" id="updGo">지금 업데이트</button>
+    <button class="mx" id="updClose" onclick="$('updBar').classList.remove('on')">✕</button>
   </div>
 
   <!-- 목록 -->
@@ -893,11 +900,54 @@ function ffmpegStatus(text, ok){
   else S.ffmpegMsg = text;
   renderStatus();
 }
-function updateAvailable(ver, url, notes){    // Python → JS (업데이트 체크 결과)
+/* ── 자동 업데이트 배너 ──────────────────────────────────────
+   updateAvailable() 로 뜨고, '지금 업데이트' 를 누르면 Python 이 설치본을
+   직접 받아 조용히 재설치한다. 진행 상황은 appUpdate() 로 되돌아온다.
+   자동이 실패하면 릴리스 페이지로 받는 길(updUrl)을 남겨둔다. */
+let updUrl = '';        // 브라우저 폴백용 릴리스 페이지 주소
+function updateAvailable(ver, url, notes, forced){   // Python → JS (업데이트 체크 결과)
+  updUrl = url || '';
   $('updText').textContent = `🆕 새 버전 v${ver} 이 나왔습니다` + (notes ? ` — ${notes}` : '');
   $('updText').title = notes || '';
-  $('updGo').onclick = () => { if(url) api().open_url(url); };
+  $('updGo').disabled = false;
+  $('updGo').textContent = '지금 업데이트';
+  $('updGo').onclick = startAppUpdate;
+  // 강제 업데이트는 닫을 수 없다 (Python 이 곧바로 설치를 시작한다)
+  $('updClose').style.display = forced ? 'none' : '';
+  $('updBar').classList.remove('busy');
   $('updBar').classList.add('on');
+}
+
+async function startAppUpdate(){
+  $('updGo').disabled = true;
+  $('updGo').textContent = '업데이트 중';
+  $('updFill').style.width = '0%';
+  $('updBar').classList.add('busy');
+  $('updText').textContent = '🔄 새 버전 준비 중…';
+  const r = await api().start_app_update();
+  if(r && r.ok === false) appUpdate('error', 0, r.error || '업데이트를 시작하지 못했습니다');
+}
+
+const UPD_LABEL = {
+  resolving:   '새 버전 확인 중',
+  downloading: '새 버전 받는 중',
+  verifying:   '파일 확인 중',
+  launching:   '설치 중 — 끝나면 새 버전이 다시 열립니다',
+};
+function appUpdate(stage, pct, message){     // Python → JS (자동 업데이트 진행 상황)
+  if(stage === 'error'){
+    $('updBar').classList.remove('busy');
+    $('updText').textContent = `⚠ 자동 업데이트 실패 — ${message}`;
+    $('updText').title = message || '';
+    $('updGo').disabled = !updUrl;
+    $('updGo').textContent = '브라우저로 받기';
+    $('updGo').onclick = () => { if(updUrl) api().open_url(updUrl); };
+    return;
+  }
+  $('updBar').classList.add('busy');
+  $('updFill').style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
+  const label = UPD_LABEL[stage] || '준비 중';
+  $('updText').textContent = `🔄 ${label}${message ? ` · ${message}` : ''}`;
 }
 
 /* ── 키보드: ESC 로 분석/설정 모달 닫기 ── */

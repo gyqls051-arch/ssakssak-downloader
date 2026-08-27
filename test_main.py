@@ -269,7 +269,7 @@ def _dl():
 
 def _cfg(**kw):
     return DownloadConfig(
-        url=kw.pop("url", "https://s.com/v"), out_dir=".",
+        url=kw.pop("url", "https://s.com/v"), out_dir=kw.pop("out_dir", "."),
         format_str=kw.pop("format_str", "FMT"),
         is_audio_only=kw.pop("is_audio_only", False),
         container="mp4", ffmpeg_dir=None, **kw)
@@ -346,3 +346,335 @@ def test_interpret_blocks_unsafe_download_url():
     d = _uc()._interpret({"latest_version": "2.0",
                           "download_url": "javascript:alert(1)"})
     assert d.download_url is None      # is_safe_http_url 로 차단
+
+
+# ------------------- 저장 단계 실패 판별 / 오류 문구 -------------------
+# 배경: 4K 다운로드가 '받기'는 다 끝내고 마지막 이름 바꾸기에서 WinError 5 로
+# 죽었는데, 앱은 재시도 사다리 맨 끝(best/worst)의 엉뚱한 영어 메시지를 띄웠다.
+
+def test_looks_like_output_error():
+    assert main.looks_like_output_error(
+        "[WinError 5] 액세스가 거부되었습니다: 'a.temp.mp4' -> 'a.mp4'")
+    assert main.looks_like_output_error("PermissionError: Permission denied")
+    assert main.looks_like_output_error(
+        "[WinError 32] 다른 프로세스가 사용 중이기 때문에")
+    assert not main.looks_like_output_error(
+        "ERROR: [youtube] x: Requested format is not available")
+
+
+def test_friendly_error_explains_real_cause():
+    out = main.friendly_error("[WinError 5] 액세스가 거부되었습니다: 'a' -> 'b'")
+    assert "저장 폴더" in out and "WinError" not in out
+    assert "화질" in main.friendly_error(
+        "ERROR: [youtube] x: Requested format is not available.")
+    assert "쿠키" in main.friendly_error(
+        "ERROR: Could not copy Chrome cookie database. See ...")
+    assert main.friendly_error("") == "다운로드에 실패했습니다."
+    # 모르는 오류는 첫 줄만 남긴다 (마지막 줄은 잘린 경로 조각일 때가 많다)
+    assert main.friendly_error("진짜 원인\n  -> 경로 조각") == "진짜 원인"
+
+
+# --------------- 작업 폴더 → 저장 폴더 옮기기 (_harvest) ---------------
+
+def test_free_path_uniquifies(tmp_path):
+    assert Downloader._free_path(str(tmp_path), "a.mp4") == tmp_path / "a.mp4"
+    (tmp_path / "a.mp4").write_bytes(b"x")
+    assert Downloader._free_path(str(tmp_path), "a.mp4") == tmp_path / "a (2).mp4"
+    (tmp_path / "a (2).mp4").write_bytes(b"x")
+    assert Downloader._free_path(str(tmp_path), "a.mp4") == tmp_path / "a (3).mp4"
+
+
+def test_harvest_moves_only_finished_files(tmp_path):
+    work, out = tmp_path / "work", tmp_path / "out"
+    work.mkdir(), out.mkdir()
+    (work / "영상.mp4").write_bytes(b"video")
+    (work / "영상.f137.mp4.part").write_bytes(b"partial")   # 받다 만 조각
+    (work / "영상.webp").write_bytes(b"thumb")              # 심고 남은 썸네일
+
+    seen: list[str] = []
+    dl = Downloader(on_progress=lambda d: None, on_done=lambda ok, e: None,
+                    on_item_done=lambda vid, fp=None: seen.append(fp))
+    dl._tmpdir = str(work)
+    dl._harvest(str(out))
+
+    assert (out / "영상.mp4").read_bytes() == b"video"
+    assert sorted(p.name for p in out.iterdir()) == ["영상.mp4"]
+    assert seen == [str(out / "영상.mp4")]     # 진짜 경로로 UI 에 정정 통보
+
+
+def test_harvest_skips_half_merged_file(tmp_path):
+    """'제목.temp.mp4' 는 합치다 만 깨진 파일이라 내보내면 안 된다."""
+    work, out = tmp_path / "work", tmp_path / "out"
+    work.mkdir(), out.mkdir()
+    (work / "영상.temp.mp4").write_bytes(b"half")
+    (work / "내.temp.영상.mp4").write_bytes(b"ok")   # 이름에 .temp 가 낀 정상 파일
+
+    dl = _dl()
+    dl._tmpdir = str(work)
+    dl._harvest(str(out))
+
+    assert not (out / "영상.temp.mp4").exists()
+    assert (out / "내.temp.영상.mp4").read_bytes() == b"ok"
+
+
+def test_harvest_never_overwrites_existing(tmp_path):
+    """같은 영상을 두 번 받아도 기존 파일을 건드리지 않는다.
+    예전엔 여기서 덮어쓰기를 시도하다 '액세스가 거부' 로 다운로드가 죽었다."""
+    work, out = tmp_path / "work", tmp_path / "out"
+    work.mkdir(), out.mkdir()
+    (out / "영상.mp4").write_bytes(b"old")
+    (work / "영상.mp4").write_bytes(b"new")
+
+    dl = _dl()
+    dl._tmpdir = str(work)
+    dl._harvest(str(out))
+
+    assert (out / "영상.mp4").read_bytes() == b"old"        # 기존 파일 그대로
+    assert (out / "영상 (2).mp4").read_bytes() == b"new"
+
+
+def test_base_opts_works_inside_workdir(tmp_path):
+    """yt-dlp 는 작업 폴더 안에서만 일한다 → 저장 폴더 충돌 자체가 없다."""
+    dl = _dl()
+    dl._tmpdir = str(tmp_path / "work")
+    opts = dl._base_opts(_cfg(out_dir=str(tmp_path / "out")))
+    assert opts["paths"] == {"home": dl._tmpdir, "temp": dl._tmpdir}
+
+
+def test_base_opts_falls_back_to_out_dir_without_workdir(tmp_path):
+    dl = _dl()
+    dl._tmpdir = None
+    out = str(tmp_path / "out")
+    assert dl._base_opts(_cfg(out_dir=out))["paths"] == {"home": out}
+
+
+# ------------------- 재시도 사다리의 오류 보고 -------------------
+
+class _FakeYDL:
+    """download() 가 정해진 예외를 던지는 yt_dlp.YoutubeDL 대역."""
+    raises: Exception = RuntimeError("boom")
+    calls: list[int] = []
+
+    def __init__(self, opts): pass
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def download(self, urls):
+        type(self).calls.append(1)
+        raise type(self).raises
+
+
+def _run_with_fake_ydl(monkeypatch, tmp_path, exc):
+    _FakeYDL.calls = []
+    _FakeYDL.raises = exc
+    monkeypatch.setattr(main.yt_dlp, "YoutubeDL", _FakeYDL)
+    monkeypatch.setattr(main.Downloader, "_try_stage2", lambda self, c, b: False)
+    monkeypatch.setattr(main, "detect_cookie_browser", lambda: None)
+    done: list[tuple] = []
+    dl = Downloader(on_progress=lambda d: None,
+                    on_done=lambda ok, e: done.append((ok, e)))
+    dl.run(_cfg(url="https://s.com/v", out_dir=str(tmp_path)))
+    return done[-1], len(_FakeYDL.calls)
+
+
+def test_reports_first_error_not_last(monkeypatch, tmp_path):
+    """사다리 맨 끝은 'best/worst 로 낮춰보기'라 유튜브에선 늘 같은 말로
+    끝난다. 그 메시지가 첫 시도의 진짜 원인을 덮으면 안 된다."""
+    (ok, err), tries = _run_with_fake_ydl(
+        monkeypatch, tmp_path, RuntimeError("ERROR: 첫 시도가 알려준 진짜 원인"))
+    assert ok is False
+    assert "진짜 원인" in err
+    assert tries > 1                     # 사다리는 정상적으로 다 타봤다
+
+
+def test_stops_retrying_on_output_error(monkeypatch, tmp_path):
+    """저장 실패는 방식을 바꿔도 똑같이 실패한다 → 즉시 멈추고 원인을 알린다."""
+    (ok, err), tries = _run_with_fake_ydl(
+        monkeypatch, tmp_path,
+        OSError("[WinError 5] 액세스가 거부되었습니다: 'a.temp.mp4' -> 'a.mp4'"))
+    assert ok is False
+    assert tries == 1                    # 사다리를 타지 않는다
+    assert "저장 폴더" in err
+
+
+# ------------------- 앱 자동 업데이트 (AppUpdater) -------------------
+
+def _api_resp(payload: dict, monkeypatch):
+    raw = json.dumps(payload).encode("utf-8")
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1): return raw
+
+    monkeypatch.setattr(main.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp())
+
+
+def test_app_updater_picks_exe_asset(monkeypatch):
+    _api_resp({"assets": [
+        {"name": "notes.txt", "browser_download_url": "https://x/notes.txt"},
+        {"name": "Setup-v1.9.exe", "size": 123, "digest": "sha256:ABC123",
+         "browser_download_url": "https://github.com/o/r/d/Setup-v1.9.exe"},
+    ]}, monkeypatch)
+    a = main.AppUpdater()._from_api("1.9")
+    assert a.url.endswith("Setup-v1.9.exe")
+    assert a.size == 123
+    assert a.sha256 == "abc123"            # 소문자 hex
+
+
+def test_app_updater_ignores_non_https_asset(monkeypatch):
+    _api_resp({"assets": [
+        {"name": "Setup.exe", "browser_download_url": "http://x/Setup.exe"},
+    ]}, monkeypatch)
+    with pytest.raises(RuntimeError):      # 실행 파일을 평문 http 로 받지 않는다
+        main.AppUpdater()._from_api("1.9")
+
+
+def test_app_updater_errors_when_release_has_no_exe(monkeypatch):
+    _api_resp({"assets": [{"name": "notes.txt",
+                           "browser_download_url": "https://x/notes.txt"}]},
+              monkeypatch)
+    with pytest.raises(RuntimeError):
+        main.AppUpdater()._from_api("1.9")
+
+
+def test_app_updater_resolve_prefers_explicit_url(monkeypatch):
+    """version.json 이 직접 지정하면 API 를 부르지 않는다 (비상 탈출구)."""
+    def boom(*a, **k):
+        raise AssertionError("API 를 부르면 안 된다")
+    monkeypatch.setattr(main.urllib.request, "urlopen", boom)
+    d = main.UpdateDecision(kind="new_version", latest_version="1.9",
+                            installer_url="https://x/s.exe",
+                            installer_sha256="ab", installer_size=7)
+    a = main.AppUpdater().resolve(d)
+    assert (a.url, a.sha256, a.size) == ("https://x/s.exe", "ab", 7)
+
+
+def _asset(**kw):
+    return main.InstallerAsset(url=kw.pop("url", "https://x/s.exe"), **kw)
+
+
+def test_app_updater_verify_accepts_good_exe(tmp_path, monkeypatch):
+    monkeypatch.setattr(main.AppUpdater, "MIN_EXE_BYTES", 0)
+    exe = tmp_path / "s.exe"
+    exe.write_bytes(b"MZ" + b"\0" * 100)
+    main.AppUpdater._verify(exe, _asset(size=102,
+                                        sha256=main.AppUpdater._sha256(exe)))
+
+
+@pytest.mark.parametrize("bad", [
+    dict(size=999),                 # 릴리스가 알려준 크기와 다름 (전송 중 손상)
+    dict(sha256="deadbeef"),        # 해시 불일치 (변조 의심)
+])
+def test_app_updater_verify_rejects_mismatch(tmp_path, monkeypatch, bad):
+    monkeypatch.setattr(main.AppUpdater, "MIN_EXE_BYTES", 0)
+    exe = tmp_path / "s.exe"
+    exe.write_bytes(b"MZ" + b"\0" * 100)
+    with pytest.raises(RuntimeError):
+        main.AppUpdater._verify(exe, _asset(**bad))
+
+
+def test_app_updater_verify_rejects_non_executable(tmp_path, monkeypatch):
+    """오류 페이지(HTML)를 받아놓고 설치본이라 믿는 일이 없도록."""
+    monkeypatch.setattr(main.AppUpdater, "MIN_EXE_BYTES", 0)
+    page = tmp_path / "s.exe"
+    page.write_bytes(b"<html>Not Found</html>")
+    with pytest.raises(RuntimeError):
+        main.AppUpdater._verify(page, _asset())
+
+
+def test_app_updater_verify_rejects_absurd_size(tmp_path):
+    tiny = tmp_path / "s.exe"
+    tiny.write_bytes(b"MZ")
+    with pytest.raises(RuntimeError):      # 5MB 미만 → 잘린 파일
+        main.AppUpdater._verify(tiny, _asset())
+
+
+def test_app_updater_refuses_plain_http_download():
+    with pytest.raises(RuntimeError):
+        main.AppUpdater().download(_asset(url="http://x/s.exe"), lambda p: None)
+
+
+def test_setup_args_match_installer_script():
+    """installer.iss 의 WantsAutoRun 이 읽는 인자와 어긋나면 설치 후 앱이
+    다시 안 켜진다. 이름이 바뀌면 여기서 먼저 걸리게 둔다."""
+    assert "/AUTORUN=1" in main.AppUpdater.SETUP_ARGS
+    assert "/SILENT" in main.AppUpdater.SETUP_ARGS
+    iss = (main.Path(__file__).parent / "installer.iss").read_text(encoding="utf-8-sig")
+    assert "{param:AUTORUN|0}" in iss
+
+
+# ------------- version.json → 설치본 정보 전달 -------------
+
+def test_interpret_carries_installer_override():
+    d = _uc()._interpret({"latest_version": "2.0",
+                          "installer_url": "https://x/s.exe",
+                          "installer_sha256": "abc", "installer_size": 12})
+    assert d.installer_url == "https://x/s.exe"
+    assert d.installer_sha256 == "abc" and d.installer_size == 12
+
+
+def test_interpret_blocks_unsafe_installer_url():
+    d = _uc()._interpret({"latest_version": "2.0",
+                          "installer_url": "file:///C:/evil.exe"})
+    assert d.installer_url is None      # API 조회로 폴백
+
+
+def test_interpret_defaults_to_api_lookup():
+    """평소 version.json 에는 설치본 정보를 안 적는다 → AppUpdater 가 찾는다."""
+    d = _uc()._interpret({"latest_version": "2.0"})
+    assert d.installer_url is None and d.installer_size == 0
+
+
+def test_interpret_force_update_can_self_install():
+    """강제 업데이트도 앱 안에서 받아 설치한다 → 버전을 들고 있어야 한다."""
+    d = _uc()._interpret({"min_supported_version": "1.5", "latest_version": "2.0"})
+    assert d.kind == "force_update" and d.latest_version == "2.0"
+
+
+# ------------------- 작업 폴더 위치 / 뒷정리 -------------------
+
+def test_workdir_defaults_to_app_folder(monkeypatch, tmp_path):
+    """저장 폴더와 같은 드라이브면 앱 폴더에 만든다 (저장 폴더는 안 건드림)."""
+    app_root = tmp_path / "app"
+    monkeypatch.setattr(main, "download_temp_root", lambda: app_root)
+    out = tmp_path / "out"
+    work = _dl()._make_workdir(str(out))
+    assert work is not None
+    assert main.Path(work).parent == app_root
+    assert not out.exists()
+
+
+def test_workdir_follows_save_dir_on_other_volume(monkeypatch, tmp_path):
+    """다른 드라이브면 저장 폴더 안에 만든다 — 안 그러면 마지막 '옮기기'가
+    통째 복사가 돼서 4K·8K 에서 눈에 띄게 느려진다."""
+    monkeypatch.setattr(main, "download_temp_root", lambda: tmp_path / "app")
+    monkeypatch.setattr(main.Downloader, "_same_volume",
+                        staticmethod(lambda a, b: False))
+    out = tmp_path / "out"
+    work = main.Path(_dl()._make_workdir(str(out)))
+    assert work.parent == out / main.WORKDIR_NAME
+
+
+def test_run_cleans_up_workdir_in_save_dir(monkeypatch, tmp_path):
+    """작업 폴더 껍데기가 저장 폴더에 남으면 안 된다 (v1.8 에서 고친 문제)."""
+    monkeypatch.setattr(main, "download_temp_root", lambda: tmp_path / "app")
+    monkeypatch.setattr(main.Downloader, "_same_volume",
+                        staticmethod(lambda a, b: False))
+    out = tmp_path / "out"
+    (ok, _err), _ = _run_with_fake_ydl_in(monkeypatch, out, RuntimeError("nope"))
+    assert ok is False
+    assert not (out / main.WORKDIR_NAME).exists()
+
+
+def _run_with_fake_ydl_in(monkeypatch, out_dir, exc):
+    _FakeYDL.calls = []
+    _FakeYDL.raises = exc
+    monkeypatch.setattr(main.yt_dlp, "YoutubeDL", _FakeYDL)
+    monkeypatch.setattr(main.Downloader, "_try_stage2", lambda self, c, b: False)
+    monkeypatch.setattr(main, "detect_cookie_browser", lambda: None)
+    done: list[tuple] = []
+    dl = Downloader(on_progress=lambda d: None,
+                    on_done=lambda ok, e: done.append((ok, e)))
+    dl.run(_cfg(url="https://s.com/v", out_dir=str(out_dir)))
+    return done[-1], len(_FakeYDL.calls)

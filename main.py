@@ -136,7 +136,7 @@ import yt_dlp
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.8"
+APP_VERSION = "1.9"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -162,6 +162,10 @@ PROMO_URL = "https://www.offcut.dev/?utm_source=ssakssak_downloader&utm_medium=a
 VERSION_INFO_URL = "https://raw.githubusercontent.com/gyqls051-arch/ssakssak-downloader/main/version.json"
 VERSION_CHECK_TIMEOUT = 3.0   # 초
 VERSION_JSON_MAX_BYTES = 10_000  # 응답 크기 제한 (메모리 보호)
+# 설치본(.exe)이 올라가는 릴리스 저장소. 앱이 스스로 새 버전을 받을 때
+# 이 저장소의 릴리스 API 에서 v<버전> 태그의 에셋을 찾는다(AppUpdater).
+# version.json 과 같은 저장소여야 한다.
+GITHUB_RELEASE_REPO = "gyqls051-arch/ssakssak-downloader"
 
 # 화질 라벨 → 높이(px). None=최고화질 자동, -1=음성만
 QUALITY_TABLE: list[tuple[str, int | None]] = [
@@ -216,6 +220,22 @@ YOUTUBE_CLIENT_LADDER: list[str | None] = [None, "tv_simply", "android", "tv", "
 # DRM(기술적 보호조치) 보호 콘텐츠로 보이는 오류 키워드. 감지되면 우회를
 # 절대 시도하지 않고(불법) 즉시 명확히 안내한 뒤 중단한다.
 DRM_HINTS = ("drm", "widevine", "playready", "fairplay")
+
+# '받는 데'가 아니라 '저장하는 데'서 실패했음을 알리는 오류 키워드.
+# (같은 이름의 파일이 재생기에 열려 있으면 마지막 이름 바꾸기가 WinError 5 로
+#  죽는다. 예전엔 이걸 네트워크 실패로 착각해 방식을 10번 바꿔가며 재시도했고,
+#  마지막 시도의 엉뚱한 메시지가 화면에 떴다.)
+OUTPUT_ERROR_HINTS = (
+    "액세스가 거부",             # WinError 5 (한국어 윈도우)
+    "access is denied",
+    "winerror 5",
+    "winerror 32",
+    "다른 프로세스가 사용",       # WinError 32
+    "used by another process",
+    "permission denied",
+    "no space left",
+    "디스크 공간",
+)
 
 # 2단계 폴백: yt-dlp 가 사이트를 인식 못 할 때, 페이지 HTML 에서 직접 찾을
 # 스트리밍 매니페스트(HLS .m3u8 / DASH .mpd) 패턴.
@@ -333,6 +353,11 @@ def ytdlp_cache_dir() -> str:
     다시 받지 않도록 영속 캐시를 둬 반복 분석을 조금 더 빠르게 한다."""
     return str(Path(os.environ.get("LOCALAPPDATA") or Path.home())
                / APP_ID / "ytdlp-cache")
+
+
+# 저장 폴더가 앱 폴더와 다른 드라이브일 때, 저장 폴더 안에 만드는 작업 폴더 이름.
+# (다른 드라이브면 마지막에 '옮기기'가 통째 복사가 돼서 4K·8K 가 느려진다.)
+WORKDIR_NAME = ".ssakssak-tmp"
 
 
 def download_temp_root() -> Path:
@@ -713,6 +738,36 @@ def looks_like_drm(err: str) -> bool:
     return any(k in e for k in DRM_HINTS)
 
 
+def looks_like_output_error(err: str) -> bool:
+    """'다 받아놓고 저장하는 데서' 실패한 경우인지 판별.
+
+    네트워크가 아니라 디스크 문제라서, 다른 다운로드 방식으로 재시도해봐야
+    똑같이 실패한다. 재시도 사다리를 타지 않고 즉시 원인을 알려야 한다."""
+    e = (err or "").lower()
+    return any(k in e for k in OUTPUT_ERROR_HINTS)
+
+
+def friendly_error(err: str) -> str:
+    """yt-dlp/OS 의 원문 오류를 사용자가 읽을 수 있는 한 줄로 바꾼다.
+
+    원문을 그대로 띄우면 'Requested format is not available' 처럼 진짜 원인과
+    상관없는 영어 문장이 화면에 남는다."""
+    if not err:
+        return "다운로드에 실패했습니다."
+    if looks_like_output_error(err):
+        return ("저장 폴더에 파일을 쓰지 못했습니다 — 같은 이름의 파일이 "
+                "재생 중이거나 다른 프로그램에서 열려 있는지 확인해 주세요.")
+    e = err.lower()
+    if "requested format is not available" in e:
+        return "이 화질로는 받을 수 없습니다. 다른 화질로 시도해 주세요."
+    if "could not copy" in e and "cookie" in e:
+        return "브라우저 쿠키를 읽지 못했습니다 — 브라우저를 닫고 다시 시도해 주세요."
+    if "sign in" in e or "login" in e:
+        return "로그인이 필요한 영상입니다."
+    lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
+    return (lines[0] if lines else err)[:200]
+
+
 # ============================================================
 #  서비스: 영상 정보 분석
 # ============================================================
@@ -821,6 +876,10 @@ class DownloadConfig:
 class Downloader:
     """yt-dlp 다운로드 래퍼. progress/완료 콜백 호출."""
 
+    # 저장 폴더로 옮길 때 '빈 이름 고르기 → 옮기기' 를 한 덩어리로 묶는 잠금.
+    # 동시 다운로드 두 개가 같은 이름을 동시에 집는 걸 막는다 (클래스 공유).
+    _harvest_lock = threading.Lock()
+
     def __init__(self,
                  on_progress: Callable[[dict], None],
                  on_done: Callable[[bool, str | None], None],
@@ -864,12 +923,13 @@ class Downloader:
             self._on_item_done(vid, self._final_path(info.get("filepath")))
 
     def _final_path(self, filepath: str | None) -> str | None:
-        """후처리 훅이 알려준 경로를 '옮겨진 뒤'의 최종 경로로 바꾼다.
+        """후처리 훅이 알려준 경로를 '옮겨진 뒤'의 예상 경로로 바꾼다.
 
-        중간 산출물을 임시 폴더로 뺐기 때문에(paths.temp) 훅 시점의 경로는
-        아직 임시 폴더를 가리킨다. yt-dlp 는 그 뒤 저장 폴더로 파일을 옮기고
-        임시 폴더는 run() 이 지우므로, 그대로 UI 에 넘기면 '재생/폴더 열기'가
-        사라진 파일을 가리키게 된다. 파일명만 떼어 저장 폴더에 붙인다."""
+        yt-dlp 는 작업 폴더 안에서만 일하므로(_base_opts 의 paths) 훅 시점의
+        경로는 아직 작업 폴더를 가리킨다. 그대로 UI 에 넘기면 '재생/폴더 열기'가
+        곧 사라질 파일을 가리키게 되므로 파일명만 떼어 저장 폴더에 붙인다.
+        여기서 만든 건 어디까지나 예상값이고, 실제로 옮긴 뒤 _harvest() 가
+        진짜 경로로 다시 알려준다(이름이 겹쳐 '(2)' 가 붙었을 수 있다)."""
         if not filepath or not self._out_dir or not self._tmpdir:
             return filepath
         try:
@@ -878,6 +938,66 @@ class Downloader:
         except (OSError, ValueError):
             pass
         return filepath
+
+    @staticmethod
+    def _free_path(out_dir: str, name: str) -> Path:
+        """저장 폴더에서 아직 안 쓰인 이름을 고른다.
+
+        같은 영상을 두 번 받아도 덮어쓰지 않고 '제목 (2).mp4' 로 남는다
+        (브라우저 다운로드와 같은 방식)."""
+        base = Path(out_dir) / name
+        if not base.exists():
+            return base
+        stem, suffix = base.stem, base.suffix
+        for n in range(2, 1000):
+            cand = base.with_name(f"{stem} ({n}){suffix}")
+            if not cand.exists():
+                return cand
+        return base.with_name(f"{stem} ({os.getpid()}){suffix}")
+
+    def _harvest(self, out_dir: str) -> None:
+        """작업 폴더에서 완성된 파일을 저장 폴더로 옮긴다.
+
+        yt-dlp 는 이번 실행 전용 작업 폴더 안에서만 받고 합친다. 저장 폴더는
+        마지막에 여기서 딱 한 번 건드린다. 덕분에
+          - 같은 영상을 여러 번(또는 동시에) 받아도 서로를 덮어쓰지 않고,
+          - 기존 파일이 재생기에 열려 있어도 다운로드가 실패하지 않으며,
+          - 받다 만 조각이 저장 폴더에 남지 않는다.
+        (예전에는 yt-dlp 가 저장 폴더에 직접 최종 이름을 붙이다가, 같은 이름이
+         열려 있으면 마지막 이름 바꾸기에서 '액세스가 거부' 로 죽었다.)"""
+        if not self._tmpdir:
+            return
+        try:
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            produced = sorted(p for p in Path(self._tmpdir).iterdir() if p.is_file())
+        except OSError:
+            log.exception("작업 폴더를 읽지 못했습니다")
+            return
+
+        for src in produced:
+            low = src.name.lower()
+            # 받다 만 조각은 결과물이 아니다 → 작업 폴더와 함께 버린다.
+            if low.endswith((".part", ".ytdl")) or ".part-" in low:
+                continue
+            # 합치다 만 파일('제목.temp.mp4'). 정상 종료라면 남아 있을 수 없지만,
+            # 남았다면 깨진 파일이므로 저장 폴더로 내보내지 않는다.
+            if src.stem.lower().endswith(".temp"):
+                continue
+            # 썸네일 이미지는 영상에 심고 남은 부스러기다 (EmbedThumbnail).
+            if low.endswith((".webp", ".jpg", ".jpeg", ".png")):
+                continue
+            # 동시 다운로드끼리 같은 이름을 집지 않도록 고르기~옮기기를 묶는다.
+            with self._harvest_lock:
+                dest = self._free_path(out_dir, src.name)
+                try:
+                    shutil.move(str(src), str(dest))
+                except OSError:
+                    log.exception("저장 폴더로 옮기지 못했습니다: %s", src.name)
+                    continue
+            log.info("saved: %s", dest.name)
+            if self._on_item_done is not None:
+                # 훅이 알려줬던 예상 경로를 진짜 경로로 정정한다.
+                self._on_item_done("", str(dest))
 
     def run(self, cfg: DownloadConfig) -> None:
         """단계적 폴백으로 다운로드 성공률을 높인다.
@@ -889,24 +1009,61 @@ class Downloader:
         DRM 감지 시: 우회하지 않고 즉시 안내 후 중단."""
         self._cancel_event.clear()
         self._out_dir = cfg.out_dir
-        # 동시 다운로드끼리 섞이지 않도록 이번 실행만의 하위 폴더를 쓴다.
-        tmp_root = download_temp_root()
-        try:
-            tmp_root.mkdir(parents=True, exist_ok=True)
-            self._tmpdir = tempfile.mkdtemp(prefix="dl-", dir=str(tmp_root))
-        except OSError:
-            log.warning("임시 폴더 생성 실패 — 저장 폴더를 그대로 사용", exc_info=True)
-            self._tmpdir = None
+        self._tmpdir = self._make_workdir(cfg.out_dir)
         try:
             self._run_inner(cfg)
         finally:
             if self._tmpdir:
+                parent = Path(self._tmpdir).parent
                 shutil.rmtree(self._tmpdir, ignore_errors=True)
                 self._tmpdir = None
+                # 저장 폴더 안에 만든 작업 폴더라면 껍데기도 치운다. rmdir 은
+                # 비었을 때만 지우므로, 동시에 받는 다른 다운로드는 안 건드린다.
+                if parent.name == WORKDIR_NAME:
+                    with contextlib.suppress(OSError):
+                        parent.rmdir()
+
+    @staticmethod
+    def _same_volume(a: str, b: str) -> bool:
+        """두 경로가 같은 드라이브에 있는지. 판단이 안 되면 False(=보수적)."""
+        try:
+            da = os.path.splitdrive(os.path.abspath(a))[0]
+            db = os.path.splitdrive(os.path.abspath(b))[0]
+        except (OSError, ValueError):
+            return False
+        return bool(da) and da.lower() == db.lower()
+
+    def _make_workdir(self, out_dir: str) -> str | None:
+        """이번 다운로드 전용 작업 폴더를 만든다 (동시 다운로드끼리 격리).
+
+        저장 폴더와 같은 드라이브에 두어야 마지막에 옮기는 게 즉시 끝나는
+        '이름 바꾸기'가 된다. 다른 드라이브면 통째로 복사라서 4K·8K 영상에선
+        눈에 띄게 느려진다. 그래서 기본은 앱 폴더(%LOCALAPPDATA%)를 쓰되,
+        저장 폴더가 다른 드라이브일 때만 저장 폴더 안에 만든다.
+        어느 쪽이든 끝나면 run() 이 통째로 지운다.
+        만들지 못하면 None → 예전처럼 저장 폴더에서 직접 작업한다."""
+        app_root = download_temp_root()
+        roots = [app_root]
+        if not self._same_volume(str(app_root), out_dir):
+            # 저장 폴더가 다른 드라이브 → 복사를 피하려고 그 안에 만든다.
+            # 다 받고 나면 run() 이 이 껍데기까지 지운다.
+            roots.insert(0, Path(out_dir) / WORKDIR_NAME)
+        for root in roots:
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                return tempfile.mkdtemp(prefix="dl-", dir=str(root))
+            except OSError:
+                log.warning("작업 폴더 생성 실패: %s", root, exc_info=True)
+        log.warning("작업 폴더를 만들지 못했습니다 — 저장 폴더에서 바로 작업합니다")
+        return None
 
     def _run_inner(self, cfg: DownloadConfig) -> None:
         """run() 본체. 임시 폴더 정리는 run() 이 책임진다."""
         base = self._base_opts(cfg)
+        # 첫 시도의 오류를 따로 붙든다. 마지막 시도는 'best/worst 로 낮춰보기'
+        # 같은 최후수단이라, 유튜브에선 늘 '이 화질은 못 받는다'로 끝난다.
+        # 그 메시지를 그대로 띄우면 진짜 원인(예: 저장 실패)이 가려진다.
+        first_err: str | None = None
         last_err: str | None = None
 
         # ── 1단계: 옵션을 바꿔가며 재시도 ──────────────────────
@@ -920,6 +1077,7 @@ class Downloader:
                 log.info("download attempt %d: %s", i + 1, label)
                 with yt_dlp.YoutubeDL({**base, **extra}) as ydl:
                     ydl.download([cfg.url])
+                self._harvest(cfg.out_dir)
                 self._on_done(True, None)
                 return
             except yt_dlp.utils.DownloadCancelled:
@@ -932,14 +1090,22 @@ class Downloader:
                     log.info("DRM content detected; bypass not attempted")
                     self._on_done(False, "DRM 보호 콘텐츠는 지원하지 않습니다.")
                     return
+                if first_err is None:
+                    first_err = msg
                 last_err = msg
                 log.info("attempt failed (%s): %s", label,
                          (msg.splitlines()[-1] if msg else "")[:160])
+                # 디스크에 못 쓴 거라면 방식을 바꿔 받아봐야 똑같이 실패한다.
+                if looks_like_output_error(msg):
+                    log.error("output write failed; stopping retries")
+                    self._on_done(False, friendly_error(msg))
+                    return
 
         # ── 2단계: yt-dlp 가 전부 실패 → 직접 스트림 탐색 ──────
         if not self._cancel_event.is_set():
             try:
                 if self._try_stage2(cfg, base):
+                    self._harvest(cfg.out_dir)
                     self._on_done(True, None)
                     return
             except yt_dlp.utils.DownloadCancelled:
@@ -952,15 +1118,18 @@ class Downloader:
             self._on_done(False, DOWNLOAD_CANCELLED)
         else:
             log.error("all download attempts failed")
-            self._on_done(False, last_err or "다운로드에 실패했습니다.")
+            self._on_done(False, friendly_error(first_err or last_err or ""))
 
     def _base_opts(self, cfg: DownloadConfig) -> dict:
         """모든 시도가 공유하는 기본 yt-dlp 옵션 (포맷/쿠키/헤더는 시도별로 덮음)."""
         opts: dict = {
             "outtmpl": "%(title)s.%(ext)s",
-            # home=최종 저장 폴더, temp=중간 산출물 폴더 (버려진 .part 격리)
-            "paths": {"home": cfg.out_dir,
-                      "temp": self._tmpdir or cfg.out_dir},
+            # 받기·합치기·후처리를 전부 이번 실행 전용 작업 폴더 안에서 끝낸다.
+            # 저장 폴더에는 완성된 파일만 _harvest() 가 마지막에 옮긴다 — 같은
+            # 이름의 파일이 이미 있거나 재생 중이어도 다운로드가 죽지 않는다.
+            # (작업 폴더를 못 만들었을 때만 예전처럼 저장 폴더에서 직접 작업)
+            "paths": ({"home": self._tmpdir, "temp": self._tmpdir}
+                      if self._tmpdir else {"home": cfg.out_dir}),
             "noplaylist": False,
             "progress_hooks": [self._progress_hook],
             "postprocessor_hooks": [self._postprocessor_hook],
@@ -1172,9 +1341,15 @@ class UpdateDecision:
     """version.json 해석 결과를 UI에 안전한 형태로 전달."""
     kind: str           # "killswitch" | "force_update" | "new_version" | "uptodate"
     message: str = ""
-    download_url: str | None = None
+    download_url: str | None = None      # 릴리스 페이지 (브라우저 폴백용)
     latest_version: str = ""
     release_notes: str = ""
+    # 앱이 직접 받아 설치할 설치본. 비어 있으면 AppUpdater 가 릴리스 API 에서
+    # 알아서 찾는다 — 평소엔 version.json 에 적을 필요가 없고, 릴리스 구조가
+    # 달라진 비상시에만 직접 지정하는 탈출구다.
+    installer_url: str | None = None
+    installer_sha256: str = ""
+    installer_size: int = 0
 
 
 class UpdateChecker:
@@ -1216,6 +1391,16 @@ class UpdateChecker:
         url = data.get("download_url")
         safe_url = url if is_safe_http_url(url) else None
         current = self.current_version
+        latest_str = str(data.get("latest_version", self.current_version))
+
+        # 설치본 직접 지정(선택). 평소엔 비워두고 릴리스 API 로 찾게 둔다.
+        setup_url = data.get("installer_url")
+        setup: dict = {
+            "installer_url": setup_url if is_safe_http_url(setup_url) else None,
+            "installer_sha256": str(data.get("installer_sha256") or ""),
+            "installer_size": int(data.get("installer_size") or 0)
+            if str(data.get("installer_size") or "0").isdigit() else 0,
+        }
 
         if data.get("killswitch"):
             return UpdateDecision(
@@ -1231,18 +1416,220 @@ class UpdateChecker:
                 kind="force_update",
                 message=f"현재 버전(v{self.current_version})은 더 이상 지원되지 않습니다.",
                 download_url=safe_url,
+                # 강제 업데이트도 앱 안에서 받아 설치한다 → 설치본 정보가 필요.
+                latest_version=latest_str,
+                release_notes=str(data.get("release_notes", "")),
+                **setup,
             )
 
-        latest_str = str(data.get("latest_version", self.current_version))
         if compare_versions(current, latest_str) < 0:
             return UpdateDecision(
                 kind="new_version",
                 latest_version=latest_str,
                 release_notes=str(data.get("release_notes", "")),
                 download_url=safe_url,
+                **setup,
             )
 
         return UpdateDecision(kind="uptodate")
+
+
+# ============================================================
+#  서비스: 앱 자동 업데이트 (설치본을 직접 받아 조용히 재설치)
+# ============================================================
+
+def app_update_dir() -> Path:
+    """새 설치본을 받아두는 폴더."""
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / APP_ID / "update"
+
+
+@dataclass
+class AppUpdateProgress:
+    stage: str        # "resolving" | "downloading" | "verifying" | "launching" | "error"
+    pct: float = 0.0
+    message: str = ""
+
+
+@dataclass
+class InstallerAsset:
+    """받을 설치본의 주소와, 받은 뒤 대조할 값들."""
+    url: str
+    size: int = 0
+    sha256: str = ""
+
+
+class AppUpdater:
+    """새 버전 설치본을 앱이 직접 받아 무인 설치한다 (브라우저를 거치지 않음).
+
+    설치본 주소는 릴리스 API 에서 찾는다. 배포할 때 version.json 의 버전만
+    올리면 되고 해시를 손으로 적어 넣을 일이 없다.
+
+    무결성 3중 방어 (ffmpeg 자동 설치와 같은 방식):
+    (a) 크기가 릴리스에 게시된 값과 정확히 일치하는지 (잘린 파일/오류 페이지 차단)
+    (b) GitHub API 가 게시한 SHA256 과 바이트 대조 — 다운로드(objects.githubusercontent)
+        와 분리된 api.github.com TLS 채널이라 전송 중 변조를 잡는다.
+        API 를 못 받으면 (a)(c) 로만 진행해 업데이트를 막지는 않는다.
+    (c) 받은 파일이 실제 윈도우 실행 파일인지 (MZ 시그니처)
+
+    설치본은 관리자 권한이 필요 없다 (installer.iss 의 PrivilegesRequired=lowest,
+    %LOCALAPPDATA%\\Programs 에 설치) → UAC 창 없이 조용히 끝난다."""
+
+    API_URL_FMT = "https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    API_TIMEOUT = 10               # 초
+    API_MAX_BYTES = 1_000_000      # 릴리스 JSON 응답 크기 상한 (메모리 보호)
+    DOWNLOAD_TIMEOUT = 60          # 초
+    # 설치본 크기 sanity 범위. 현재 설치본은 ~88MB (Node 런타임 + 엔진 동봉).
+    MIN_EXE_BYTES = 5 * 1024 * 1024
+    MAX_EXE_BYTES = 400 * 1024 * 1024
+    PROGRESS_INTERVAL = 0.15       # 초 — UI 갱신 주기 (evaluate_js 폭주 방지)
+
+    # Inno Setup 무인 설치 인자.
+    #   /SILENT            진행 창만 띄우고 마법사는 생략 (완전 무음보다 안심됨)
+    #   /CLOSEAPPLICATIONS 구버전이 아직 떠 있어도 파일을 교체할 수 있게
+    #   /NORESTART         재부팅 요구 금지
+    #   /AUTORUN=1         설치가 끝나면 새 버전을 다시 띄운다 (installer.iss 가 읽음)
+    SETUP_ARGS = ["/SILENT", "/CLOSEAPPLICATIONS", "/NORESTART", "/AUTORUN=1"]
+
+    def __init__(self, repo: str = GITHUB_RELEASE_REPO):
+        self.repo = repo
+
+    # ---------------- 1) 무엇을 받을지 확정 ----------------
+
+    def resolve(self, decision: UpdateDecision) -> InstallerAsset:
+        """받을 설치본의 주소·크기·해시를 확정한다. 실패하면 예외."""
+        if decision.installer_url:
+            return InstallerAsset(url=decision.installer_url,
+                                  size=decision.installer_size,
+                                  sha256=decision.installer_sha256)
+        return self._from_api(decision.latest_version)
+
+    def _from_api(self, latest_version: str) -> InstallerAsset:
+        """릴리스 API 에서 v<버전> 태그에 붙은 .exe 에셋을 찾는다."""
+        tag = latest_version if latest_version.startswith("v") else f"v{latest_version}"
+        url = self.API_URL_FMT.format(repo=self.repo,
+                                      tag=urllib.parse.quote(tag, safe=""))
+        req = urllib.request.Request(
+            url, headers={"User-Agent": HTTP_UA,
+                          "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=self.API_TIMEOUT) as resp:
+            raw = resp.read(self.API_MAX_BYTES)
+        data = json.loads(raw.decode("utf-8"))
+
+        for asset in data.get("assets") or []:
+            name = str(asset.get("name") or "")
+            if not name.lower().endswith(".exe"):
+                continue
+            dl = str(asset.get("browser_download_url") or "")
+            if not dl.lower().startswith("https://"):
+                continue
+            digest = str(asset.get("digest") or "")
+            sha = (digest.split(":", 1)[1].strip().lower()
+                   if digest.lower().startswith("sha256:") else "")
+            log.info("app update: asset %s (%s bytes, sha256=%s)",
+                     name, asset.get("size"), sha or "없음")
+            return InstallerAsset(url=dl, size=int(asset.get("size") or 0),
+                                  sha256=sha)
+        raise RuntimeError(f"{tag} 릴리스에서 설치 파일(.exe)을 찾지 못했습니다")
+
+    # ---------------- 2) 받고 검증 ----------------
+
+    def download(self, asset: InstallerAsset,
+                 on_progress: Callable[[AppUpdateProgress], None]) -> Path:
+        """설치본을 받아 검증까지 마친 경로를 돌려준다. 실패하면 예외."""
+        # 실행 파일을 받는 것이라 평문 http 는 허용하지 않는다.
+        if not asset.url.lower().startswith("https://"):
+            raise RuntimeError("설치 파일 주소가 https 가 아닙니다")
+
+        target_dir = app_update_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # 원격이 알려준 이름을 그대로 쓰지 않는다(경로 조작 방지). 고정 이름 사용.
+        dest = target_dir / "update-setup.exe"
+        self._cleanup(dest)
+
+        req = urllib.request.Request(asset.url, headers={"User-Agent": HTTP_UA})
+        try:
+            with urllib.request.urlopen(req, timeout=self.DOWNLOAD_TIMEOUT) as resp:
+                total = int(resp.headers.get("Content-Length") or asset.size or 0)
+                done = 0
+                last = 0.0
+                with open(dest, "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if done > self.MAX_EXE_BYTES:
+                            raise RuntimeError("받는 파일이 비정상적으로 큽니다")
+                        now = time.monotonic()
+                        if now - last >= self.PROGRESS_INTERVAL or done == total:
+                            last = now
+                            on_progress(AppUpdateProgress(
+                                stage="downloading",
+                                pct=(done / total * 100) if total else 0.0,
+                                message=(f"{done/1048576:.0f} / {total/1048576:.0f} MB"
+                                         if total else f"{done/1048576:.0f} MB"),
+                            ))
+        except Exception:
+            self._cleanup(dest)
+            raise
+
+        on_progress(AppUpdateProgress(stage="verifying", pct=100.0,
+                                      message="파일 확인 중"))
+        try:
+            self._verify(dest, asset)
+        except Exception:
+            self._cleanup(dest)
+            raise
+        return dest
+
+    @classmethod
+    def _verify(cls, path: Path, asset: InstallerAsset) -> None:
+        """받은 설치본의 무결성을 검증한다. 실패하면 예외."""
+        size = path.stat().st_size
+        if not (cls.MIN_EXE_BYTES <= size <= cls.MAX_EXE_BYTES):
+            raise RuntimeError(f"받은 파일 크기가 비정상입니다 ({size/1048576:.1f} MB)")
+        if asset.size and size != asset.size:
+            raise RuntimeError("받은 파일이 릴리스 정보와 크기가 다릅니다 (전송 중 손상)")
+        if asset.sha256:
+            if cls._sha256(path) != asset.sha256.strip().lower():
+                raise RuntimeError("SHA256 해시가 일치하지 않습니다 (변조 의심)")
+        else:
+            log.warning("app update: 해시를 확인하지 못했습니다 (크기·형식만 검증)")
+        with open(path, "rb") as f:
+            if f.read(2) != b"MZ":
+                raise RuntimeError("받은 파일이 실행 파일이 아닙니다")
+
+    @staticmethod
+    def _sha256(path: Path) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest().lower()
+
+    # ---------------- 3) 설치 시작 ----------------
+
+    def launch(self, setup: Path) -> None:
+        """설치본을 무인 모드로 띄운다.
+
+        DETACHED_PROCESS 로 떼어놓아야 이 앱이 종료돼도 설치가 계속된다.
+        호출한 쪽은 곧바로 앱을 종료해야 한다 — 구버전이 살아 있으면 파일
+        교체가 지연된다."""
+        subprocess.Popen(
+            [str(setup)] + self.SETUP_ARGS,
+            close_fds=True,
+            creationflags=(getattr(subprocess, "DETACHED_PROCESS", 0)
+                           | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
+        )
+        log.info("app update: installer launched (%s)", setup)
+
+    @staticmethod
+    def _cleanup(path: Path) -> None:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 # ============================================================
@@ -1526,6 +1913,10 @@ class Api:
         self._analyzer = VideoAnalyzer()
         self._installer = FfmpegInstaller()
         self._updater = UpdateChecker()
+        self._app_updater = AppUpdater()
+        # 업데이트 체크 결과. 배너의 '지금 업데이트' 가 이걸 보고 설치본을 받는다.
+        self._pending_update: UpdateDecision | None = None
+        self._updating = False
         self._ffmpeg_dir = find_ffmpeg()
         self._auto_cookie_browser: str | None = None
         self._files: dict[str, str] = {}              # job_id → 최종 파일 경로
@@ -1726,6 +2117,22 @@ class Api:
     def open_url(self, url: str) -> None:
         safe_open_url(url)
 
+    def start_app_update(self) -> dict:
+        """배너의 '지금 업데이트' → 새 설치본을 받아 조용히 재설치한다."""
+        if self._updating:
+            return {"ok": True}
+        decision = self._pending_update
+        if decision is None:
+            return {"ok": False, "error": "업데이트 정보를 찾지 못했습니다"}
+        # 설치는 앱을 종료시킨다 → 받는 중인 영상이 있으면 날아간다.
+        if self._active:
+            return {"ok": False,
+                    "error": "다운로드가 끝난 뒤에 업데이트해 주세요"}
+        self._updating = True
+        threading.Thread(target=self._run_app_update, args=(decision,),
+                         name="app-updater", daemon=True).start()
+        return {"ok": True}
+
     def win_minimize(self) -> None:
         try:
             self._window.minimize()
@@ -1825,19 +2232,73 @@ class Api:
             self._cfg["killed_message"] = ""
             self._settings.save(self._cfg)
         if decision.kind == "force_update":
+            self._pending_update = decision
             self._js(f"alert({json.dumps(decision.message + ' 업데이트가 필요합니다.')})")
-            safe_open_url(decision.download_url)
-        elif decision.kind == "new_version":
-            # 새 버전 알림 배너 (강제 아님 — 사용자가 닫을 수 있음)
+            # 강제 업데이트도 앱 안에서 바로 받아 설치한다. 실패하면 배너가
+            # '브라우저로 받기' 로 바뀌므로 여기서 브라우저를 열지 않는다.
             self._js(
                 f"updateAvailable({json.dumps(decision.latest_version)},"
                 f"{json.dumps(decision.download_url or '')},"
-                f"{json.dumps(decision.release_notes)})"
+                f"{json.dumps(decision.release_notes)},true)"
+            )
+            started = self.start_app_update()
+            if not started.get("ok"):
+                self._app_update_failed(str(started.get("error") or "시작 실패"))
+        elif decision.kind == "new_version":
+            # 새 버전 알림 배너 (강제 아님 — 사용자가 닫을 수 있음)
+            self._pending_update = decision
+            self._js(
+                f"updateAvailable({json.dumps(decision.latest_version)},"
+                f"{json.dumps(decision.download_url or '')},"
+                f"{json.dumps(decision.release_notes)},false)"
             )
 
     def _kill(self, msg: str) -> None:
         self._js(f"alert({json.dumps(msg)})")
         self.exit_confirmed()
+
+    def _run_app_update(self, decision: UpdateDecision) -> None:
+        """설치본 받기 → 검증 → 무인 설치 시작 → 앱 종료.
+
+        어느 단계에서 실패하든 배너를 '브라우저로 받기' 로 되돌려 사용자가
+        수동으로 받을 길을 남긴다 (자동이 막혀도 막다른 길이 되지 않도록)."""
+        def say(stage: str, pct: float = 0.0, message: str = "") -> None:
+            self._js(f"appUpdate({json.dumps(stage)},{pct:.1f},"
+                     f"{json.dumps(message)})")
+
+        say("resolving", 0, "새 버전 확인 중")
+        try:
+            asset = self._app_updater.resolve(decision)
+        except Exception as e:
+            log.exception("app update: 설치본을 찾지 못했습니다")
+            self._app_update_failed(f"설치 파일을 찾지 못했습니다 ({e})")
+            return
+
+        try:
+            setup = self._app_updater.download(
+                asset, lambda p: say(p.stage, p.pct, p.message))
+        except Exception as e:
+            log.exception("app update: 다운로드 실패")
+            self._app_update_failed(str(e) or "다운로드에 실패했습니다")
+            return
+
+        say("launching", 100, "설치를 시작합니다")
+        try:
+            self._app_updater.launch(setup)
+        except Exception as e:
+            log.exception("app update: 설치 시작 실패")
+            self._app_update_failed(f"설치를 시작하지 못했습니다 ({e})")
+            return
+
+        # 구버전이 떠 있으면 파일 교체가 막힌다 → 곧바로 종료한다.
+        # 설치가 끝나면 설치본이 /AUTORUN=1 로 새 버전을 다시 띄운다.
+        time.sleep(0.8)
+        log.info("app update: exiting for installer")
+        self.exit_confirmed()
+
+    def _app_update_failed(self, msg: str) -> None:
+        self._updating = False
+        self._js(f"appUpdate('error',0,{json.dumps(msg[:200])})")
 
     def _install_ffmpeg(self) -> None:
         def cb(p: FfmpegProgress) -> None:

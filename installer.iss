@@ -7,7 +7,7 @@
 
 ; 새 버전 배포 시 여기 버전만 올리면 됨 (version.json 과 맞출 것)
 #define MyAppName "싹싹김치 다운로더"
-#define MyAppVersion "1.8"
+#define MyAppVersion "1.9"
 #define MyAppPublisher "싹싹김치 패밀리"
 #define MyAppURL "https://github.com/gyqls051-arch/ssakssak-downloader"
 #define MyAppExeName "SsakSsakKimchiDownloader.exe"
@@ -64,3 +64,14 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; 앱이 스스로 업데이트할 때(main.py 의 AppUpdater 가 /SILENT /AUTORUN=1 로 실행)
+; 설치가 끝나면 새 버전을 다시 띄운다. 위 항목은 skipifsilent 라 무인 설치에서는
+; 실행되지 않으므로 이 줄이 따로 필요하다. Check 가 False 면 마법사에도 안 뜬다.
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall; Check: WantsAutoRun
+
+[Code]
+// 앱 자동 업데이트로 실행됐는지(/AUTORUN=1) 판별.
+function WantsAutoRun(): Boolean;
+begin
+  Result := ExpandConstant('{param:AUTORUN|0}') = '1';
+end;
