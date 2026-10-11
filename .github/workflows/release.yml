@@ -43,7 +43,7 @@ jobs:
           pip install --pre --upgrade yt-dlp
 
       - name: Prepare side folders (potprovider + engine)
-        run: python prepare_bundle.py
+        run: python prepare_bundle.py --force --release-lock bundle-release-lock.json
 
       - name: Build exe
         run: |
