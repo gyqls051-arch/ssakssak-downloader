@@ -2,6 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>싹싹김치 비디오 다운로더</title>
 <style>
@@ -398,6 +399,16 @@
         <button class="btn-sec" style="height:34px;padding:0 16px" onclick="pickFolder()">찾기</button>
         <button class="btn-sec" style="height:34px;padding:0 16px" onclick="api().open_folder()">열기</button>
       </div>
+      <div style="margin-top:18px;padding-top:15px;border-top:1px solid #EEF0F2">
+        <label style="display:flex;align-items:flex-start;gap:9px;cursor:default">
+          <input id="setCookies" type="checkbox" onchange="setCookieOptIn()"
+                 style="width:16px;height:16px;margin-top:1px;accent-color:var(--accent)">
+          <span>
+            <span style="display:block;font-size:12.5px;font-weight:700;color:var(--ink3)">로그인이 필요한 영상에 브라우저 쿠키 사용</span>
+            <span style="display:block;font-size:11.5px;line-height:1.5;color:var(--muted2);margin-top:3px">기본값은 사용 안 함입니다. 직접 켠 경우에만 로그인 오류 뒤 로컬 브라우저 쿠키를 읽습니다.</span>
+          </span>
+        </label>
+      </div>
     </div>
     <div class="mfoot"><button class="btn-primary" onclick="closeSettings()">완료</button></div>
   </div>
@@ -492,7 +503,34 @@
 const ACCENT = '#fe780b';
 const api = () => window.pywebview.api;
 function $(id){ return document.getElementById(id); }
-function escapeHtml(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function escapeHtml(value){
+  return String(value ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+function safeImageUrl(value){
+  try {
+    const u = new URL(String(value || ''));
+    return u.protocol === 'https:' && !u.username && !u.password ? u.href : '';
+  } catch(e) { return ''; }
+}
+function newJobId(){
+  if(window.crypto && typeof window.crypto.randomUUID === 'function')
+    return 'd' + window.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return 'd' + Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+// 로컬 앱 UI가 파일 드롭이나 링크 클릭으로 외부 문서로 이동하지 않게 한다.
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => e.preventDefault());
+document.addEventListener('click', e => {
+  const link = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+  if(!link) return;
+  e.preventDefault();
+  const href = link.getAttribute('href') || '';
+  if(/^https:\/\//i.test(href)) api().open_url(href);
+});
 
 /* ── 앱 상태 ── */
 const S = {
@@ -569,9 +607,9 @@ async function smartDownload(url){
   try { r = await api().analyze(url); } finally { setPasteLoading(false); }
   if(!r || !r.ok){ toast('분석 실패: ' + ((r && r.error) || '')); return; }
   const q = smartQuality(r), f = S.init.format || (S.init.formats && S.init.formats[0]);
-  const id = 'd' + Date.now();
+  const id = newJobId();
   addJob(id, r.title, r.thumbnail, subBadge(q, f));   // 먼저 등록 → 초기 이벤트 유실 방지
-  const res = await api().start_download(id, r.url, q, f);
+  const res = await api().start_download(id, r.url, q, f, r.analysis_id || '');
   if(!res.ok){ removeJob(id); toast(res.error || '시작 실패'); return; }
   toast('다운로드 시작 · ' + r.title);
 }
@@ -610,12 +648,13 @@ function fillModal(r){
   $('mSave').textContent = '저장: ' + (r.save_short || S.saveDir || '');
   const th = $('mThumb');
   const PLAY = '<div class="vplay"><svg width="18" height="18" viewBox="0 0 24 24" fill="#15171A"><path d="M8 5.5v13l11-6.5z"/></svg></div>';
-  if(r.thumbnail){
+  const thumbUrl = safeImageUrl(r.thumbnail);
+  if(thumbUrl){
     th.innerHTML = '';
     const im = document.createElement('img');
-    im.onerror = () => { th.innerHTML = PLAY; };  // 핫링크 차단(IG/TikTok 등) 시 ▶ 자리표시자로 폴백
-    im.src = r.thumbnail;
-    th.appendChild(im);                           // 즉시 부착 → 로딩되는 대로 표시(목록 썸네일과 동일 방식)
+    im.onerror = () => { th.innerHTML = PLAY; };  // 핫링크 차단 시 ▶ 자리표시자로 폴백
+    im.src = thumbUrl;
+    th.appendChild(im);
   } else {
     th.innerHTML = PLAY;
   }
@@ -683,9 +722,9 @@ async function confirmDownload(){
   const isAudio = S.modalTab === 'audio';
   const quality = isAudio ? '음성만 (MP3)' : (S.modalQuality || r.quality);
   const fmt = S.modalFormat || (S.init.formats && S.init.formats[0]);
-  const id = 'd' + Date.now();
+  const id = newJobId();
   addJob(id, r.title, r.thumbnail, subBadge(quality, fmt));   // 먼저 등록 → 초기 이벤트 유실 방지
-  const res = await api().start_download(id, r.url, quality, fmt);
+  const res = await api().start_download(id, r.url, quality, fmt, r.analysis_id || '');
   if(!res.ok){ removeJob(id); showModalError(res.error || '시작 실패'); return; }
   closePaste();
 }
@@ -697,9 +736,31 @@ function subBadge(quality, fmt){
 }
 
 /* ── 설정 ── */
-function openSettings(){ $('setPath').value = S.saveDir; $('ovSettings').classList.add('on'); }
+function openSettings(){
+  $('setPath').value = S.saveDir;
+  $('setCookies').checked = S.init.cookie_opt_in === true;
+  $('ovSettings').classList.add('on');
+}
 function closeSettings(){ $('ovSettings').classList.remove('on'); }
 async function pickFolder(){ const d = await api().pick_folder(); if(d){ S.saveDir = d; $('setPath').value = d; renderStatus(); } }
+async function setCookieOptIn(){
+  const checkbox = $('setCookies');
+  const requested = checkbox.checked === true;
+  checkbox.disabled = true;
+  let result = null;
+  try { result = await api().set_cookie_opt_in(requested); }
+  catch(e) { result = {ok:false}; }
+  checkbox.disabled = false;
+  const actual = (result && typeof result.enabled === 'boolean')
+    ? result.enabled : (S.init.cookie_opt_in === true);
+  checkbox.checked = actual;
+  S.init.cookie_opt_in = actual;
+  if(!result || result.ok === false){
+    toast((result && result.error) || '쿠키 설정을 저장하지 못했습니다');
+    return;
+  }
+  toast(actual ? '브라우저 쿠키 사용을 허용했습니다' : '브라우저 쿠키 사용을 껐습니다');
+}
 
 /* ── 종료 광고 / 약관 ── */
 function showExit(){        // Python → JS (창 닫기 시). 진행 중 다운로드가 있으면 경고.
@@ -794,15 +855,8 @@ function renderStatus(){
 function renderList(){
   const list = $('list');
   const vis = S.order.filter(id => visible(S.jobs[id]));
-  if(!vis.length){ list.innerHTML = emptyHTML(); return; }
-  list.innerHTML = vis.map(id => rowHTML(S.jobs[id])).join('');
-  // 액션 버튼 핸들러 연결
-  list.querySelectorAll('[data-act]').forEach(b => {
-    const id = b.dataset.id, act = b.dataset.act;
-    if(act==='remove') b.onclick = () => removeJob(id);
-    else if(act==='folder') b.onclick = () => api().open_item(id);
-    else if(act==='play') b.onclick = () => api().play_item(id);
-  });
+  if(!vis.length){ list.innerHTML = emptyHTML(); return; } // emptyHTML은 고정 로컬 마크업
+  list.replaceChildren(...vis.map(id => rowElement(S.jobs[id])));
 }
 function emptyHTML(){
   if(S.order.length === 0){
@@ -823,52 +877,111 @@ function barClass(st){
 }
 function metaFor(j){
   switch(j.status){
-    case 'done': return { meta: '완료' + (j.size?' · '+j.size:''), color: 'var(--green)' };
+    case 'done': {
+      const res = j.res ? ' · '+j.res : '';
+      const size = j.size ? ' · '+j.size : '';
+      if(j.warn) return { meta: '⚠ 요청 화질보다 낮음' + res + size, color: '#B7791F' };
+      return { meta: '완료' + res + size, color: 'var(--green)' };
+    }
     case 'error': return { meta: '✗ ' + (j.statusText || '실패'), color: 'var(--danger)' };
     case 'cancelled': return { meta: '■ 취소됨', color: '#8A8A8E' };
     case 'queued': return { meta: '대기 중', color: '#A6A6AA' };
     case 'merging': return { meta: '🔄 합치는 중…', color: '#5E5E62' };
     case 'retry': return { meta: '⟳ ' + (j.statusText||'재시도 중…'), color: '#5E5E62' };
-    default: { // downloading
-      const sp = j.speed > 0 ? ` · ${j.speed.toFixed(1)} MB/s` : '';
-      return { meta: `${Math.round(j.pct||0)}%${sp}`, color: '#5E5E62' };
+    default: {
+      const sp = Number(j.speed) > 0 ? ` · ${Number(j.speed).toFixed(1)} MB/s` : '';
+      return { meta: `${Math.round(Number(j.pct)||0)}%${sp}`, color: '#5E5E62' };
     }
   }
 }
-function rowHTML(j){
-  const cls = barClass(j.status);
-  const width = j.status==='done' ? 100 : (j.status==='merging' ? 99 : (j.pct||0));
-  const m = metaFor(j);
-  const thumb = j.thumb
-    ? `<img src="${escapeHtml(j.thumb)}" onerror="this.style.display='none'">`
-    : `<span class="thumb-ph">▶</span>`;
-  const dur = j.dur ? `<span class="thumb-dur">${escapeHtml(j.dur)}</span>` : '';
-  let acts = '';
-  if(j.status === 'done'){
-    acts += `<button class="act" data-act="folder" data-id="${j.id}" title="폴더 열기"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>`;
-    acts += `<button class="act" data-act="play" data-id="${j.id}" title="재생"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></button>`;
-  }
-  acts += `<button class="act x" data-act="remove" data-id="${j.id}" title="목록에서 제거">${
-    isActive(j)
-      ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
-      : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
-  }</button>`;
-  return `<div class="row" data-id="${j.id}">
-    <div class="thumb">${thumb}${dur}</div>
-    <div class="row-mid">
-      <div class="row-top">
-        <span class="row-title">${escapeHtml(j.title)}</span>
-        ${j.sub?`<span class="row-sub">${escapeHtml(j.sub)}</span>`:''}
-      </div>
-      <div class="row-prog">
-        <div class="bar"><div class="bar-fill ${cls}" style="width:${width}%"></div></div>
-        <span class="row-meta" style="color:${m.color}">${m.meta}</span>
-      </div>
-    </div>
-    <div class="row-acts">${acts}</div>
-  </div>`;
+function actionButton(action, id, title, svg){
+  const button = document.createElement('button');
+  button.className = action === 'remove' ? 'act x' : 'act';
+  button.dataset.act = action;
+  button.dataset.id = String(id);
+  button.title = title;
+  button.innerHTML = svg; // 호출부의 고정 SVG만 사용
+  if(action === 'remove') button.onclick = () => removeJob(id);
+  else if(action === 'folder') button.onclick = () => api().open_item(id);
+  else if(action === 'play') button.onclick = () => api().play_item(id);
+  return button;
 }
-function rowEl(id){ return $('list').querySelector(`.row[data-id="${id}"]`); }
+function rowElement(j){
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.dataset.id = String(j.id);
+
+  const thumb = document.createElement('div');
+  thumb.className = 'thumb';
+  const thumbUrl = safeImageUrl(j.thumb);
+  if(thumbUrl){
+    const image = document.createElement('img');
+    image.src = thumbUrl;
+    image.onerror = () => image.remove();
+    thumb.appendChild(image);
+  } else {
+    const placeholder = document.createElement('span');
+    placeholder.className = 'thumb-ph';
+    placeholder.textContent = '▶';
+    thumb.appendChild(placeholder);
+  }
+  if(j.dur){
+    const duration = document.createElement('span');
+    duration.className = 'thumb-dur';
+    duration.textContent = String(j.dur);
+    thumb.appendChild(duration);
+  }
+
+  const mid = document.createElement('div');
+  mid.className = 'row-mid';
+  const top = document.createElement('div');
+  top.className = 'row-top';
+  const title = document.createElement('span');
+  title.className = 'row-title';
+  title.textContent = String(j.title || '');
+  top.appendChild(title);
+  if(j.sub){
+    const sub = document.createElement('span');
+    sub.className = 'row-sub';
+    sub.textContent = String(j.sub);
+    top.appendChild(sub);
+  }
+
+  const progress = document.createElement('div');
+  progress.className = 'row-prog';
+  const bar = document.createElement('div');
+  bar.className = 'bar';
+  const fill = document.createElement('div');
+  fill.className = `bar-fill ${barClass(j.status)}`;
+  const rawPct = Number(j.pct);
+  const width = j.status === 'done' ? 100 : (j.status === 'merging' ? 99 :
+    (Number.isFinite(rawPct) ? Math.max(0, Math.min(100, rawPct)) : 0));
+  fill.style.width = width + '%';
+  bar.appendChild(fill);
+  const metaInfo = metaFor(j);
+  const meta = document.createElement('span');
+  meta.className = 'row-meta';
+  meta.style.color = metaInfo.color;
+  meta.textContent = String(metaInfo.meta);
+  progress.append(bar, meta);
+  mid.append(top, progress);
+
+  const actions = document.createElement('div');
+  actions.className = 'row-acts';
+  if(j.status === 'done'){
+    actions.appendChild(actionButton('folder', j.id, '폴더 열기', '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>'));
+    actions.appendChild(actionButton('play', j.id, '재생', '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>'));
+  }
+  const removeSvg = isActive(j)
+    ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
+    : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  actions.appendChild(actionButton('remove', j.id, '목록에서 제거', removeSvg));
+  row.append(thumb, mid, actions);
+  return row;
+}
+function rowEl(id){
+  return Array.from($('list').querySelectorAll('.row')).find(row => row.dataset.id === String(id)) || null;
+}
 
 /* ── Python → JS 콜백 ── */
 function setBusy(){ /* 진행 요약은 작업 목록(tally)에서 계산하므로 별도 처리 불필요 */ }
@@ -891,6 +1004,7 @@ function dlStatus(id, text){ const j = S.jobs[id]; if(!j) return; j.status='retr
 function dlDone(id, info){
   const j = S.jobs[id]; if(!j) return;
   j.status='done'; j.pct=100; j.speed=0; j.size=(info&&info.size)||''; j.file=(info&&info.file)||'';
+  j.res=(info&&info.res)||''; j.warn=!!(info&&info.warn);
   renderList(); renderFilters(); renderStatus();
 }
 function dlError(id, msg){ const j = S.jobs[id]; if(!j) return; j.status='error'; j.statusText=msg; renderList(); renderFilters(); renderStatus(); }
@@ -912,8 +1026,8 @@ function updateAvailable(ver, url, notes, forced){   // Python → JS (업데이
   $('updGo').disabled = false;
   $('updGo').textContent = '지금 업데이트';
   $('updGo').onclick = startAppUpdate;
-  // 강제 업데이트는 닫을 수 없다 (Python 이 곧바로 설치를 시작한다)
-  $('updClose').style.display = forced ? 'none' : '';
+  // unsigned version.json은 강제 업데이트 권한이 없다. 모든 알림은 닫을 수 있다.
+  $('updClose').style.display = '';
   $('updBar').classList.remove('busy');
   $('updBar').classList.add('on');
 }

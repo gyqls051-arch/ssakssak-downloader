@@ -17,7 +17,8 @@ import main
 from main import (
     Downloader, DownloadConfig, FfmpegInstaller, Settings,
     URL_RE, DOWNLOAD_CANCELLED,
-    build_format_selector, compare_versions, is_safe_http_url, parse_version,
+    build_format_selector, build_format_sort, compare_versions,
+    is_safe_http_url, parse_version,
 )
 
 
@@ -59,12 +60,21 @@ def test_is_safe_http_url(url, ok):
 
 
 def test_build_format_selector_mp4_prefers_avc_aac():
-    sel = build_format_selector(1080, "mp4")
-    assert "height<=1080" in sel and "avc1" in sel and "mp4a" in sel
+    sel = build_format_selector("mp4")
+    # 해상도는 셀렉터가 아니라 format_sort(res:N)가 맡는다 — height<=N 필터는
+    # 세로 영상(Shorts 1080×1920)의 FHD 스트림을 걸러내던 버그가 있었다.
+    assert "height<=" not in sel and "avc1" in sel and "mp4a" in sel
 
 
 def test_build_format_selector_mkv_best():
-    assert build_format_selector(None, "mkv") == "bestvideo+bestaudio/best"
+    assert build_format_selector("mkv") == "bestvideo+bestaudio/best"
+
+
+def test_build_format_sort_uses_short_edge():
+    # res=min(width,height)라 세로 1080×1920도 1080p로 인식된다.
+    assert build_format_sort(1080) == ["res:1080"]
+    assert build_format_sort(None) == []
+    assert build_format_sort(-1) == []
 
 
 # ----------------------------- URL 인식 -----------------------------
@@ -119,7 +129,7 @@ def test_configure_output_minimal_no_extras():
 
 # ----------------------------- 취소 / 훅 -----------------------------
 
-def test_cancel_raises_in_progress_hook():
+def test_cancel_raises_in_progress_hook(tmp_path, monkeypatch):
     seen = []
     dl = Downloader(on_progress=lambda d: seen.append(d),
                     on_done=lambda ok, e: None)
@@ -129,11 +139,38 @@ def test_cancel_raises_in_progress_hook():
     with pytest.raises(main.yt_dlp.utils.DownloadCancelled):
         dl._progress_hook({"status": "downloading"})
 
+    # publish 직후 cancel이 먼저 terminal state를 차지하면 최종 파일은 rollback되고
+    # 작업 폴더 원본과 복구 가능성은 그대로 남아야 한다.
+    work, out = tmp_path / "work", tmp_path / "out"
+    work.mkdir(), out.mkdir()
+    source = work / "영상.mp4"
+    source.write_bytes(b"complete")
+    completed = []
+    racing = Downloader(
+        on_progress=lambda d: None, on_done=lambda ok, e: None,
+        on_item_done=lambda vid, path, dims=None: completed.append(path),
+    )
+    racing._tmpdir = str(work)
+    publish = racing._publish_completed_file
+
+    def publish_then_cancel(src, out_dir):
+        destination = publish(src, out_dir)
+        racing.cancel()
+        return destination
+
+    monkeypatch.setattr(racing, "_publish_completed_file", publish_then_cancel)
+    with pytest.raises(main.yt_dlp.utils.DownloadCancelled):
+        racing._harvest(str(out))
+    assert source.read_bytes() == b"complete"
+    assert list(out.iterdir()) == []
+    assert completed == []
+
 
 def test_postprocessor_hook_forwards_final_path():
     calls = []
     dl = Downloader(on_progress=lambda d: None, on_done=lambda ok, e: None,
-                    on_item_done=lambda vid, fp: calls.append((vid, fp)))
+                    on_item_done=lambda vid, fp, dims=None:
+                    calls.append((vid, fp)))
     dl._postprocessor_hook({"status": "finished",
                             "info_dict": {"id": "abc", "filepath": "/out/a.mp4"}})
     dl._postprocessor_hook({"status": "started", "info_dict": {"id": "abc"}})
@@ -160,13 +197,31 @@ def test_settings_corrupt_file_falls_back(tmp_path):
     assert Settings(p).load() == {}             # 손상 → 빈 dict (예외 X)
 
 
-def test_settings_save_is_atomic_no_partial(tmp_path):
+def test_settings_save_is_atomic_no_partial(tmp_path, monkeypatch):
     p = tmp_path / "config.json"
     s = Settings(p)
-    s.save({"a": 1})
-    # .tmp 잔재가 남지 않아야 한다
-    assert not (tmp_path / "config.json.tmp").exists()
-    assert json.loads(p.read_text(encoding="utf-8")) == {"a": 1}
+    assert s.save({"a": 1, "cookie_opt_in": False}) is True
+    assert json.loads(p.read_text(encoding="utf-8")) == {
+        "a": 1, "cookie_opt_in": False}
+
+    # atomic replace 실패를 주입해도 디스크·메모리 설정은 모두 이전 상태여야 하고
+    # mkstemp의 unique 임시 파일도 남지 않아야 한다.
+    def fail_replace(src, dst):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(main.os, "replace", fail_replace)
+    api = main.Api.__new__(main.Api)
+    api._state_lock = main.threading.RLock()
+    api._settings = s
+    api._cfg = {"a": 1, "cookie_opt_in": False}
+    api._analysis_contexts = {}
+    result = api.set_cookie_opt_in(True)
+
+    assert result == {"ok": False, "error": "설정을 저장하지 못했습니다",
+                      "enabled": False}
+    assert api._cfg == {"a": 1, "cookie_opt_in": False}
+    assert json.loads(p.read_text(encoding="utf-8")) == api._cfg
+    assert list(tmp_path.glob("config.json.*.tmp")) == []
 
 
 # ------------------- FfmpegInstaller 무결성 검증 -------------------
@@ -186,14 +241,19 @@ def test_verify_zip_rejects_too_small(tmp_path):
 def test_verify_zip_structure_and_hash(tmp_path, monkeypatch):
     monkeypatch.setattr(FfmpegInstaller, "MIN_ZIP_BYTES", 0)
     monkeypatch.setattr(FfmpegInstaller, "MAX_ZIP_BYTES", 10**9)
+    monkeypatch.setattr(FfmpegInstaller, "MIN_EXE_BYTES", 0)
+    content = b"MZdata"
     good = tmp_path / "good.zip"
-    _make_zip(good, "ffmpeg-x/bin/ffmpeg.exe")
-    FfmpegInstaller._verify_zip(good)           # 구조 OK → 통과
-
+    _make_zip(good, "ffmpeg-x/bin/ffmpeg.exe", content)
     digest = FfmpegInstaller._sha256(good)
-    FfmpegInstaller._verify_zip(good, digest)   # 올바른 해시 → 통과
+    FfmpegInstaller._verify_zip(
+        good, digest, good.stat().st_size, len(content))
+
     with pytest.raises(RuntimeError):
-        FfmpegInstaller._verify_zip(good, "deadbeef")  # 해시 불일치 → 예외
+        FfmpegInstaller._verify_zip(good, "deadbeef")
+    with pytest.raises(RuntimeError):
+        FfmpegInstaller._verify_zip(
+            good, digest, good.stat().st_size, len(content) + 1)
 
 
 def test_verify_zip_rejects_wrong_structure(tmp_path, monkeypatch):
@@ -205,27 +265,43 @@ def test_verify_zip_rejects_wrong_structure(tmp_path, monkeypatch):
         FfmpegInstaller._verify_zip(bad)
 
 
-def test_fetch_expected_digest_parses_api(monkeypatch):
-    payload = json.dumps({"assets": [
-        {"name": "other.zip", "digest": "sha256:ffff"},
-        {"name": FfmpegInstaller.ASSET_NAME, "digest": "sha256:ABC123"},
-    ]}).encode("utf-8")
+def test_ffmpeg_static_pins_resolve_without_api(monkeypatch):
+    tag = "autobuild-2026-08-30-12-34"
+    name = "ffmpeg-pinned-win64-gpl.zip"
+    url = f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}/{name}"
+    monkeypatch.setattr(FfmpegInstaller, "RELEASE_TAG", tag)
+    monkeypatch.setattr(FfmpegInstaller, "ASSET_NAME", name)
+    monkeypatch.setattr(FfmpegInstaller, "URL", url)
+    monkeypatch.setattr(FfmpegInstaller, "EXPECTED_SIZE",
+                        FfmpegInstaller.MIN_ZIP_BYTES)
+    monkeypatch.setattr(FfmpegInstaller, "EXPECTED_SHA256", "a" * 64)
+    monkeypatch.setattr(FfmpegInstaller, "EXPECTED_EXE_SIZE",
+                        FfmpegInstaller.MIN_EXE_BYTES)
+    monkeypatch.setattr(FfmpegInstaller, "EXPECTED_EXE_SHA256", "b" * 64)
 
-    class _Resp:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def read(self, n=-1): return payload
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("static ffmpeg pin resolution must not use network metadata")
 
-    monkeypatch.setattr(main.urllib.request, "urlopen",
-                        lambda req, timeout=0: _Resp())
-    assert FfmpegInstaller._fetch_expected_digest() == "abc123"   # 소문자 hex
+    monkeypatch.setattr(main.urllib.request, "urlopen", network_forbidden)
+    asset = FfmpegInstaller._resolve_asset()
+    assert (asset.url, asset.size, asset.sha256) == (
+        url, FfmpegInstaller.MIN_ZIP_BYTES, "a" * 64)
+    assert (asset.executable_size, asset.executable_sha256) == (
+        FfmpegInstaller.MIN_EXE_BYTES, "b" * 64)
 
 
-def test_fetch_expected_digest_network_error_returns_none(monkeypatch):
-    def boom(req, timeout=0):
-        raise OSError("offline")
-    monkeypatch.setattr(main.urllib.request, "urlopen", boom)
-    assert FfmpegInstaller._fetch_expected_digest() is None       # 안전 폴백
+def test_ffmpeg_missing_static_pins_fail_before_network(monkeypatch):
+    called = False
+
+    def unexpected_network(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise OSError("network must not be reached")
+
+    monkeypatch.setattr(main.urllib.request, "urlopen", unexpected_network)
+    with pytest.raises(RuntimeError):
+        FfmpegInstaller._resolve_asset()
+    assert called is False
 
 
 # ----------------------- DRM 감지 -----------------------
@@ -291,16 +367,17 @@ def test_attempt_plan_audio_skips_format_downgrade(monkeypatch):
     assert not any("화질" in l for l in labels)        # 음성은 포맷 낮춤 없음
 
 
-def test_attempt_plan_adds_cookie_step_when_browser_present(monkeypatch):
-    monkeypatch.setattr(main, "detect_cookie_browser", lambda: "chrome")
-    plan = _dl()._attempt_plan(_cfg())
-    assert any("쿠키" in lbl for lbl, _ in plan)
-    cookie_extra = next(extra for lbl, extra in plan if "쿠키" in lbl)
+def test_attempt_plan_adds_cookie_step_when_explicitly_allowed():
+    plan = _dl()._attempt_plan(_cfg(cookies_browser="chrome"))
+    cookie_extra = next(extra for _label, extra in plan
+                        if "cookiesfrombrowser" in extra)
     assert cookie_extra["cookiesfrombrowser"] == ("chrome", None, None, None)
 
 
 def test_base_opts_has_socket_timeout_and_hooks():
-    opts = _dl()._base_opts(_cfg())
+    dl = _dl()
+    dl._tmpdir = "/tmp/ssak-work"
+    opts = dl._base_opts(_cfg())
     assert opts["socket_timeout"] == main.SOCKET_TIMEOUT
     assert opts["retries"] == 10 and opts["fragment_retries"] == 10
     assert "format" not in opts                         # 포맷은 시도별로 덮음
@@ -315,7 +392,9 @@ def test_scan_manifest_prefers_hls(monkeypatch):
         def __exit__(self, *a): return False
         def read(self, n=-1): return html
 
-    monkeypatch.setattr(main.urllib.request, "urlopen",
+    monkeypatch.setattr(main, "validate_public_http_url",
+                        lambda url, **kwargs: url)
+    monkeypatch.setattr(main, "_open_public_url",
                         lambda req, timeout=0: _Resp())
     got = Downloader._scan_manifest("https://c.com/watch")
     assert got == "https://c.com/v/master.m3u8?a=1"     # .m3u8 우선 + \/ 복원
@@ -330,22 +409,27 @@ def _uc():
 def test_interpret_new_version_carries_notes_and_url():
     d = _uc()._interpret({"latest_version": "2.0",
                           "release_notes": "메모",
-                          "download_url": "https://x.com/dl"})
+                          "download_url": "https://attacker.example/dl"})
     assert d.kind == "new_version"
     assert d.latest_version == "2.0" and d.release_notes == "메모"
-    assert d.download_url == "https://x.com/dl"
+    assert d.download_url == (
+        f"https://github.com/{main.GITHUB_RELEASE_REPO}/releases/tag/v2.0")
+    assert "attacker.example" not in d.download_url
 
 
 def test_interpret_kinds():
-    assert _uc()._interpret({"killswitch": True}).kind == "killswitch"
-    assert _uc()._interpret({"min_supported_version": "1.5"}).kind == "force_update"
+    # unsigned manifest의 killswitch/min_supported_version은 권한이 없다.
+    assert _uc()._interpret({"killswitch": True}).kind == "uptodate"
+    assert _uc()._interpret({"min_supported_version": "1.5"}).kind == "uptodate"
     assert _uc()._interpret({"latest_version": "1.0"}).kind == "uptodate"
 
 
 def test_interpret_blocks_unsafe_download_url():
     d = _uc()._interpret({"latest_version": "2.0",
                           "download_url": "javascript:alert(1)"})
-    assert d.download_url is None      # is_safe_http_url 로 차단
+    assert d.download_url == (
+        f"https://github.com/{main.GITHUB_RELEASE_REPO}/releases/tag/v2.0")
+    assert "javascript:" not in d.download_url
 
 
 # ------------------- 저장 단계 실패 판별 / 오류 문구 -------------------
@@ -393,7 +477,8 @@ def test_harvest_moves_only_finished_files(tmp_path):
 
     seen: list[str] = []
     dl = Downloader(on_progress=lambda d: None, on_done=lambda ok, e: None,
-                    on_item_done=lambda vid, fp=None: seen.append(fp))
+                    on_item_done=lambda vid, fp=None, dims=None:
+                    seen.append(fp))
     dl._tmpdir = str(work)
     dl._harvest(str(out))
 
@@ -441,11 +526,20 @@ def test_base_opts_works_inside_workdir(tmp_path):
     assert opts["paths"] == {"home": dl._tmpdir, "temp": dl._tmpdir}
 
 
-def test_base_opts_falls_back_to_out_dir_without_workdir(tmp_path):
+def test_base_opts_fails_closed_without_workdir(tmp_path, monkeypatch):
     dl = _dl()
     dl._tmpdir = None
-    out = str(tmp_path / "out")
-    assert dl._base_opts(_cfg(out_dir=out))["paths"] == {"home": out}
+    with pytest.raises(RuntimeError):
+        dl._base_opts(_cfg(out_dir=str(tmp_path / "out")))
+
+    done = []
+    guarded = Downloader(on_progress=lambda d: None,
+                         on_done=lambda ok, e: done.append((ok, e)))
+    monkeypatch.setattr(guarded, "_make_workdir", lambda out_dir: None)
+    guarded.run(_cfg(out_dir=str(tmp_path / "out")))
+    assert done and done[-1][0] is False
+    assert "작업 폴더" in done[-1][1]
+    assert not (tmp_path / "out").exists()
 
 
 # ------------------- 재시도 사다리의 오류 보고 -------------------
@@ -511,15 +605,18 @@ def _api_resp(payload: dict, monkeypatch):
 
 
 def test_app_updater_picks_exe_asset(monkeypatch):
+    name = main.CANONICAL_SETUP_NAME_FMT.format(version="1.9")
+    digest = "a" * 64
+    size = 6 * 1024 * 1024
     _api_resp({"assets": [
         {"name": "notes.txt", "browser_download_url": "https://x/notes.txt"},
-        {"name": "Setup-v1.9.exe", "size": 123, "digest": "sha256:ABC123",
-         "browser_download_url": "https://github.com/o/r/d/Setup-v1.9.exe"},
+        {"name": name, "size": size, "digest": "sha256:" + digest,
+         "browser_download_url": "https://github.com/o/r/releases/download/v1.9/" + name},
     ]}, monkeypatch)
     a = main.AppUpdater()._from_api("1.9")
-    assert a.url.endswith("Setup-v1.9.exe")
-    assert a.size == 123
-    assert a.sha256 == "abc123"            # 소문자 hex
+    assert a.url.endswith(name)
+    assert a.size == size
+    assert a.sha256 == digest
 
 
 def test_app_updater_ignores_non_https_asset(monkeypatch):
@@ -538,16 +635,26 @@ def test_app_updater_errors_when_release_has_no_exe(monkeypatch):
         main.AppUpdater()._from_api("1.9")
 
 
-def test_app_updater_resolve_prefers_explicit_url(monkeypatch):
-    """version.json 이 직접 지정하면 API 를 부르지 않는다 (비상 탈출구)."""
-    def boom(*a, **k):
-        raise AssertionError("API 를 부르면 안 된다")
-    monkeypatch.setattr(main.urllib.request, "urlopen", boom)
-    d = main.UpdateDecision(kind="new_version", latest_version="1.9",
-                            installer_url="https://x/s.exe",
-                            installer_sha256="ab", installer_size=7)
-    a = main.AppUpdater().resolve(d)
-    assert (a.url, a.sha256, a.size) == ("https://x/s.exe", "ab", 7)
+def test_app_updater_resolve_ignores_manifest_override(monkeypatch):
+    """decision에 override 속성이 주입돼도 공식 release API만 사용한다."""
+    name = main.CANONICAL_SETUP_NAME_FMT.format(version="1.9")
+    digest = "b" * 64
+    size = 6 * 1024 * 1024
+    official = (
+        "https://github.com/gyqls051-arch/ssakssak-downloader/"
+        f"releases/download/v1.9/{name}"
+    )
+    _api_resp({"assets": [{
+        "name": name, "size": size, "digest": "sha256:" + digest,
+        "browser_download_url": official,
+    }]}, monkeypatch)
+    decision = main.UpdateDecision(kind="new_version", latest_version="1.9")
+    decision.installer_url = "https://attacker.example/evil.exe"
+    decision.installer_sha256 = "c" * 64
+    decision.installer_size = size
+
+    asset = main.AppUpdater().resolve(decision)
+    assert (asset.url, asset.sha256, asset.size) == (official, digest, size)
 
 
 def _asset(**kw):
@@ -596,40 +703,58 @@ def test_app_updater_refuses_plain_http_download():
 
 
 def test_setup_args_match_installer_script():
-    """installer.iss 의 WantsAutoRun 이 읽는 인자와 어긋나면 설치 후 앱이
-    다시 안 켜진다. 이름이 바뀌면 여기서 먼저 걸리게 둔다."""
+    """설치 재실행 인자와 release toolchain의 exact 실행 경로 계약을 함께 검증."""
     assert "/AUTORUN=1" in main.AppUpdater.SETUP_ARGS
     assert "/SILENT" in main.AppUpdater.SETUP_ARGS
-    iss = (main.Path(__file__).parent / "installer.iss").read_text(encoding="utf-8-sig")
+    root = main.Path(__file__).parent
+    iss = (root / "installer.iss").read_text(encoding="utf-8-sig")
     assert "{param:AUTORUN|0}" in iss
+    assert 'Source: "engine\\*"' not in iss
+
+    lock = json.loads((root / "bundle-release-lock.json").read_text(encoding="utf-8"))
+    bundle = (root / "prepare_bundle.py").read_text(encoding="utf-8")
+    assert lock["npm_version"] == "10.9.3"
+    assert f'NPM_VERSION = "{lock["npm_version"]}"' in bundle
+    assert 'node, str(npm_cli), "ci"' in bundle
+    assert 'node, str(tsc)' in bundle
+    assert 'node, str(npm_cli), "prune"' in bundle
+    assert 'run(["npm"' not in bundle and "def build_engine" not in bundle
+    assert "NPM_CONFIG_USERCONFIG" in bundle and "NPM_CONFIG_CACHE" in bundle
 
 
-# ------------- version.json → 설치본 정보 전달 -------------
+# ------------- unsigned version.json 권한 축소 -------------
 
 def test_interpret_carries_installer_override():
     d = _uc()._interpret({"latest_version": "2.0",
-                          "installer_url": "https://x/s.exe",
+                          "installer_url": "https://attacker.example/s.exe",
                           "installer_sha256": "abc", "installer_size": 12})
-    assert d.installer_url == "https://x/s.exe"
-    assert d.installer_sha256 == "abc" and d.installer_size == 12
+    assert not hasattr(d, "installer_url")
+    assert d.download_url.endswith("/releases/tag/v2.0")
+    assert "attacker.example" not in d.download_url
 
 
 def test_interpret_blocks_unsafe_installer_url():
     d = _uc()._interpret({"latest_version": "2.0",
                           "installer_url": "file:///C:/evil.exe"})
-    assert d.installer_url is None      # API 조회로 폴백
+    assert not hasattr(d, "installer_url")
+    assert d.kind == "new_version"
 
 
 def test_interpret_defaults_to_api_lookup():
-    """평소 version.json 에는 설치본 정보를 안 적는다 → AppUpdater 가 찾는다."""
+    """실행 asset은 manifest가 아니라 AppUpdater의 local canonical API 계약이 찾는다."""
     d = _uc()._interpret({"latest_version": "2.0"})
-    assert d.installer_url is None and d.installer_size == 0
+    assert not hasattr(d, "installer_size")
+    assert d.download_url == (
+        f"https://github.com/{main.GITHUB_RELEASE_REPO}/releases/tag/v2.0")
 
 
 def test_interpret_force_update_can_self_install():
-    """강제 업데이트도 앱 안에서 받아 설치한다 → 버전을 들고 있어야 한다."""
-    d = _uc()._interpret({"min_supported_version": "1.5", "latest_version": "2.0"})
-    assert d.kind == "force_update" and d.latest_version == "2.0"
+    """unsigned min_supported_version은 강제 상태를 만들지 못한다."""
+    current = _uc()._interpret({"min_supported_version": "9.9"})
+    newer = _uc()._interpret({"min_supported_version": "9.9",
+                              "latest_version": "2.0"})
+    assert current.kind == "uptodate"
+    assert newer.kind == "new_version" and newer.latest_version == "2.0"
 
 
 # ------------------- 작업 폴더 위치 / 뒷정리 -------------------
@@ -638,6 +763,10 @@ def test_workdir_defaults_to_app_folder(monkeypatch, tmp_path):
     """저장 폴더와 같은 드라이브면 앱 폴더에 만든다 (저장 폴더는 안 건드림)."""
     app_root = tmp_path / "app"
     monkeypatch.setattr(main, "download_temp_root", lambda: app_root)
+    # _same_volume은 Windows 드라이브 문자 기반이라 POSIX에선 항상 False —
+    # 이 테스트는 '같은 드라이브' 시나리오 자체가 목적이므로 스텁한다.
+    monkeypatch.setattr(main.Downloader, "_same_volume",
+                        staticmethod(lambda a, b: True))
     out = tmp_path / "out"
     work = _dl()._make_workdir(str(out))
     assert work is not None

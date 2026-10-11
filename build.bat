@@ -1,91 +1,105 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
 REM ============================================================
-REM  SsakSsak Kimchi Downloader - exe build script
-REM  Creates a single executable for distribution.
-REM  (English-only to avoid Windows codepage issues with .bat files)
+REM  SsakSsak Kimchi Downloader - signed internal app build
+REM  This is a release-only script. The raw app EXE is installer input,
+REM  never a public distribution artifact.
 REM ============================================================
 
-set "PY=py -3.13"
+pushd "%~dp0" >nul || exit /b 1
+set "PY_LAUNCHER=py"
+set "APP_EXE=build\app\SsakSsakKimchiDownloader.exe"
 
 echo.
-echo [1/5] Checking Python 3.13...
-%PY% --version >nul 2>&1 || (
-    echo   [ERROR] Python 3.13 is not installed.
-    echo   Install from https://www.python.org/downloads/ then retry.
-    pause
-    exit /b 1
+echo [1/8] Running fail-closed release preflight...
+%PY_LAUNCHER% -3.13 --version >nul 2>&1 || (
+    echo [ERROR] Python 3.13 is not installed.
+    goto :error
 )
+%PY_LAUNCHER% -3.13 release_gate.py preflight || goto :error
 
 echo.
-echo [2/5] Installing dependencies (pyinstaller + requirements.txt)...
-%PY% -m pip install --upgrade pyinstaller || goto :error
-%PY% -m pip install --upgrade -r requirements.txt || goto :error
-REM  yt-dlp only: take the nightly channel. YouTube changes break extraction
-REM  constantly and the stable channel lags by weeks. Measured 2026-08:
-REM  2026.03.17 capped at 360p, 2026.08.18 delivered 1080p on the same video.
-%PY% -m pip install --pre --upgrade yt-dlp || goto :error
+echo [2/8] Creating a clean, isolated release environment...
+if exist "build\release-venv" rmdir /s /q "build\release-venv" || goto :error
+%PY_LAUNCHER% -3.13 -m venv "build\release-venv" || goto :error
+set "RELEASE_PY=%CD%\build\release-venv\Scripts\python.exe"
+
+REM requirements-release-win.lock must contain the complete reviewed transitive
+REM closure with exact versions and SHA-256 hashes. The preflight rejects a
+REM missing, ranged, unhashed, VCS, URL, or alternate-index entry.
+echo.
+echo [3/8] Installing the reviewed hash-locked dependency set...
+"%RELEASE_PY%" -m pip install --require-hashes -r requirements-release-win.lock || goto :error
 
 echo.
-echo [3/5] Preparing side folders (potprovider\, engine\)...
-REM  YouTube now enforces SABR streaming: without a PO token no player client
-REM  returns a usable stream (403 after ~10MB). The provider needs a JS runtime,
-REM  so Node.js + the bgutil server are shipped next to the exe (not inside it,
-REM  to keep onefile startup fast).
-REM  engine\ holds yt-dlp itself, split out of the exe so the app can update it
-REM  on its own -- YouTube changes break extraction (and cap quality) constantly,
-REM  and users should not have to reinstall a 200MB setup for that.
-REM  Both folders are installed next to the exe by installer.iss.
-%PY% prepare_bundle.py || goto :error
+echo [4/8] Preparing the pinned PO-token side bundle (potprovider\)...
+"%RELEASE_PY%" prepare_bundle.py --force --release-lock bundle-release-lock.json || goto :error
 
+REM Never sign an app that silently bundled a workstation-local ffmpeg.exe.
+REM ffmpeg is prepared at runtime through the separately verified installer.
 echo.
-echo [4/5] Checking ffmpeg.exe bundling...
-set "FFMPEG_BUNDLE="
+echo [5/8] Enforcing deterministic binary inputs...
 if exist "ffmpeg.exe" (
-    set "FFMPEG_BUNDLE=--add-binary ffmpeg.exe;."
-    echo   - ffmpeg.exe found. Will be bundled.
-) else (
-    echo   - ffmpeg.exe not found. App will auto-download it on first run.
+    echo [ERROR] Unexpected repository-root ffmpeg.exe found.
+    echo         Remove it and use the runtime verified ffmpeg installer.
+    goto :error
 )
+if exist "build\app" rmdir /s /q "build\app" || goto :error
+if exist "build\pyinstaller" rmdir /s /q "build\pyinstaller" || goto :error
 
 echo.
-echo [5/5] Building exe... (this takes 1-2 minutes)
-REM  --add-data web_ui        : 디자인 HTML/CSS 번들 (UI 본체)
-REM  --collect-all webview    : pywebview + bottle 등
-REM  --collect-all pythonnet / clr_loader : WebView2(.NET) 백엔드 로더
-REM  --collect-all curl_cffi  : 컴파일된 libcurl DLL + cacert
-REM  --collect-submodules mutagen : yt-dlp 가 동적 import
-REM  --exclude-module playwright  : 배포 exe 에서 Playwright(2단계 최후폴백) 완전 제외.
-REM     (개인 소스 실행에서만 동작. 빌드 PC 에 playwright 가 깔려 있어도 배포본엔 미포함)
-%PY% -m PyInstaller ^
+echo [6/8] Building the internal PyInstaller app...
+"%RELEASE_PY%" -m PyInstaller ^
     --noconfirm ^
+    --clean ^
     --onefile ^
     --windowed ^
     --name "SsakSsakKimchiDownloader" ^
     --icon "app.ico" ^
     --version-file "version_info.txt" ^
+    --distpath "build\app" ^
+    --workpath "build\pyinstaller" ^
+    --specpath "build" ^
     --add-data "web_ui;web_ui" ^
     --collect-all webview ^
     --collect-all pythonnet ^
     --collect-all clr_loader ^
     --hidden-import clr ^
-    --collect-all curl_cffi ^
     --collect-submodules mutagen ^
     --exclude-module playwright ^
-    %FFMPEG_BUNDLE% ^
     main.py || goto :error
+
+if not exist "%APP_EXE%" (
+    echo [ERROR] PyInstaller did not create %APP_EXE%.
+    goto :error
+)
+
+echo.
+echo [7/8] Authenticode-signing and verifying the internal app...
+%PY_LAUNCHER% -3.13 release_gate.py sign --file "%APP_EXE%" || goto :error
+%PY_LAUNCHER% -3.13 release_gate.py verify --kind app --file "%APP_EXE%" || goto :error
+
+echo.
+echo [8/8] Recording the exact installed package inventory...
+if not exist "build\release-metadata" mkdir "build\release-metadata" || goto :error
+"%RELEASE_PY%" -m pip list --format=json > "build\release-metadata\python-packages.json" || goto :error
+copy /y "requirements-release-win.lock" "build\release-metadata\requirements-release-win.lock" >nul || goto :error
+copy /y "bundle-release-lock.json" "build\release-metadata\bundle-release-lock.json" >nul || goto :error
 
 echo.
 echo ============================================================
-echo  Build complete!
-echo  Output: dist\SsakSsakKimchiDownloader.exe
-echo  Next: run build_installer.bat to create the installer
+echo  Signed internal app build complete.
+echo  Input for installer: %APP_EXE%
+echo  DO NOT publish this raw EXE or potprovider\.
+echo  Run build_installer.bat to create the sole release artifact.
 echo ============================================================
-echo.
-pause
+popd >nul
 exit /b 0
 
 :error
+set "RC=%ERRORLEVEL%"
+if "%RC%"=="0" set "RC=1"
 echo.
-echo [ERROR] Build failed. See messages above.
-pause
-exit /b 1
+echo [ERROR] Release app build failed closed. No artifact is approved.
+popd >nul
+exit /b %RC%

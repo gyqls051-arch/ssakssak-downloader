@@ -1,8 +1,4 @@
 {
-  "latest_version": "1.9",
-  "min_supported_version": "1.0",
-  "killswitch": false,
-  "killswitch_message": "사이트 정책 변경 대응 중입니다. 잠시 후 새 버전을 배포하겠습니다.",
-  "download_url": "https://github.com/gyqls051-arch/ssakssak-downloader/releases/latest",
-  "release_notes": "⚡ 앱 자동 업데이트 — 버튼 하나면 새 버전이 알아서 깔립니다 · 🔧 같은 영상을 다시 받으면 실패하던 문제 수정 (덮어쓰지 않고 '(2)' 로 저장) · 💬 실패 이유를 알아볼 수 있게 한국어로 안내"
+  "latest_version": "1.10",
+  "release_notes": "🎞️ 세로 영상(쇼츠) 화질 버그 수정 — 1080p를 골라도 480p로 저장되던 문제 해결 · �️ 받은 파일의 실제 해상도를 표시하고, 요청 화질보다 낮게 저장되면 알려줍니다 · � 분석 팝업의 '최대 화질'이 세로 영상에서 실제보다 높게 보이던 것도 함께 수정"
 }

@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify tag matches app + installer versions
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v',''
+          $app = (Select-String -Path main.py -Pattern 'APP_VERSION = "([^"]+)"').Matches.Groups[1].Value
+          $iss = (Select-String -Path installer-ci.iss -Pattern '#define MyAppVersion "([^"]+)"').Matches.Groups[1].Value
+          if ($tag -ne $app -or $tag -ne $iss) { throw "version mismatch: tag=$tag main.py=$app installer-ci.iss=$iss" }
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          pip install --upgrade -r requirements.txt
+          pip install --pre --upgrade yt-dlp
+
+      - name: Prepare side folders (potprovider + engine)
+        run: python prepare_bundle.py
+
+      - name: Build exe
+        run: |
+          pyinstaller --noconfirm --onefile --windowed `
+            --name "SsakSsakKimchiDownloader" `
+            --icon "app.ico" `
+            --version-file "version_info.txt" `
+            --add-data "web_ui;web_ui" `
+            --collect-all webview `
+            --collect-all pythonnet `
+            --collect-all clr_loader `
+            --hidden-import clr `
+            --collect-all curl_cffi `
+            --collect-submodules mutagen `
+            --exclude-module playwright `
+            main.py
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      # 서명 인증서가 없으므로 미서명 CI 전용 스크립트를 쓴다.
+      # installer.iss는 build_installer.bat(서명) 전용 진입점이라 건드리지 않는다.
+      - name: Build installer
+        run: & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer-ci.iss
+
+      # 릴리즈는 공개 리포 ssakssak-downloader 에 올린다 (소스는 비공개 분리 구조).
+      # Secrets 에 RELEASE_TOKEN(gyqls051-arch PAT, repo 권한)을 한 번만 등록하면 된다.
+      - name: Publish release to public repo
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v',''
+          gh release create "${{ github.ref_name }}" `
+            --repo gyqls051-arch/ssakssak-downloader `
+            --title "싹싹김치 비디오 다운로더 v$ver" `
+            --generate-notes `
+            "dist/SsakSsakKimchiDownloader-Setup-v$ver.exe" `
+            "dist/SsakSsakKimchiDownloader.exe"
+
+      - name: Bump version.json in public update channel
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v',''
+          gh repo clone gyqls051-arch/ssakssak-downloader "$env:RUNNER_TEMP\ssak-dl" -- --depth 1
+          Push-Location "$env:RUNNER_TEMP\ssak-dl"
+          $j = Get-Content version.json -Raw | ConvertFrom-Json
+          $j.latest_version = $ver
+          $j | ConvertTo-Json -Depth 5 | Set-Content version.json -Encoding utf8
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.json
+          git commit -m "chore: bump version.json to $ver [skip ci]"
+          git push
+          Pop-Location

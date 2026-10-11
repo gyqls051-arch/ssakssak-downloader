@@ -1,104 +1,84 @@
 # 싹싹김치 비디오 다운로더
 
-yt-dlp 를 코어 엔진으로 쓰는 범용 영상 다운로더 (Windows · GUI).
-유튜브·인스타그램 릴스·비메오·틱톡 등 **1800+ 사이트**를 지원합니다.
+yt-dlp를 코어 엔진으로 사용하는 Windows 10/11용 영상 다운로더입니다. 유튜브·인스타그램·비메오·틱톡 등 yt-dlp가 지원하는 사이트에서 화질을 선택해 저장할 수 있습니다.
 
-> ⚠️ **다운로드 권한이 있는 영상에만 사용하세요.**
-> 저작권 준수 책임은 전적으로 사용자 본인에게 있습니다. 저작권자의 허락 없이
-> 보호되는 콘텐츠를 다운로드·복제·배포하면 법에 저촉될 수 있습니다.
-> 본 프로그램은 **DRM(기술적 보호조치)이 적용된 콘텐츠는 다운로드하지 않습니다.**
+> **다운로드 권한이 있는 콘텐츠에만 사용하세요.** 저작권과 서비스 약관 준수 책임은 사용자에게 있습니다. DRM(기술적 보호조치) 우회 기능은 제공하지 않습니다.
 
----
+## 사용자 설치
 
-## 구성 (무엇이 무엇을 하나)
+공식 배포 파일은 버전별 **서명된 설치 프로그램 하나**입니다.
 
-| 층 | 무엇 | 설명 |
-|----|------|------|
-| **다운로드 엔진(코어)** | **yt-dlp** | 실제 추출·다운로드. 1800+ 사이트 지원 |
-| **영상 합치기·변환·음원추출** | **ffmpeg** | 영상+음성 병합, mp3 추출, 썸네일 임베딩 |
-| **UI + 래퍼 로직** | pywebview(웹 UI) + 자체 파이썬 코드 | 분석 팝업·목록·설정·자동쿠키·폴백 체인 |
-| **2단계 폴백(개인·소스 전용)** | Playwright | 헤드리스 브라우저로 스트림 가로채기 (배포 exe 제외) |
+- 현재 canonical 파일명: `SsakSsakKimchiDownloader-Setup-v1.9.exe`
+- 다운로드: [GitHub Releases](https://github.com/gyqls051-arch/ssakssak-downloader/releases/latest)
+- 환경: Windows 10/11, 설치형, 약 88MB(릴리스에 따라 달라질 수 있음)
 
----
+다운로드한 파일의 이름과 디지털 서명을 확인하세요. Windows 파일 속성에서 서명이 유효하지 않거나 게시자가 공식 릴리스 안내와 다르면 실행하지 말고 [GitHub Issues](https://github.com/gyqls051-arch/ssakssak-downloader/issues)에 신고하세요. SmartScreen 또는 “알 수 없는 게시자” 경고를 우회해 실행하면 안 됩니다.
 
-## 성공률 보강 동작 (안 되는 사이트 대응)
+`build/app/SsakSsakKimchiDownloader.exe`와 `potprovider/`는 설치 프로그램을 만들기 위한 내부 산출물입니다. 이 파일·폴더를 개별 배포하면 필수 구성요소와 업데이트 신뢰 경계가 깨지므로 **배포 금지**입니다.
 
-다운로드가 실패하면 아래 순서로 **자동 재시도**합니다. (정상 사이트는 1번에서
-바로 끝나므로 평소 속도에는 영향이 없습니다.)
+## 주요 구성
 
-**1단계 — yt-dlp 옵션을 바꿔가며 재시도**
-1. 기본 다운로드 (분석 때 쿠키가 필요했던 영상이면 그 쿠키 포함)
-2. 브라우저 헤더(Referer/Origin/User-Agent) 위장 재시도
-3. 브라우저 쿠키 빌려 재시도 (로그인·연령제한 등) → 쿠키+헤더 조합
-4. 포맷을 `best` → `worst` 로 낮춰가며 재시도
-   - 모든 시도에 `retries`/`fragment_retries`/`socket_timeout` 적용
+| 구성 | 역할 |
+|---|---|
+| yt-dlp | 사이트 분석과 다운로드 |
+| ffmpeg | 영상·음성 병합, 변환, MP3 추출 |
+| pywebview + WebView2 | Windows 데스크톱 UI |
+| bgutil PO Token provider + Node.js | 유튜브 재생 토큰 보조 |
 
-**2단계 — yt-dlp 가 사이트를 인식 못 할 때**
-1. 페이지 HTML 에서 `.m3u8`(HLS) / `.mpd`(DASH) 스트림 링크를 **직접 탐색**해
-   찾은 매니페스트를 yt-dlp 에 재투입 (세그먼트 다운로드·병합은 yt-dlp 가 처리)
-2. (개인·소스 실행 시 자동) **Playwright** 로 실제 페이지를 띄워 네트워크 요청에서 스트림 URL 가로채기
+ffmpeg는 운영자가 독립 확인한 immutable release URL과 ZIP·추출 EXE 각각의 크기/SHA-256 pin이 모두 설정된 경우에만 사용자 데이터 폴더에 설치·실행합니다. yt-dlp는 검토한 Windows release lock에서 PyInstaller 앱 내부에 포함하며 writable 외부 엔진이나 런타임 PyPI 자동 업데이트를 사용하지 않습니다.
 
-**DRM 감지 시** → 우회를 시도하지 않고 "DRM 보호 콘텐츠는 지원하지 않습니다."
-안내 후 중단합니다. (DRM 우회·Cloudflare 캡차 강제 돌파는 구현하지 않습니다.)
+## 개인정보와 네트워크 동작
 
----
+- 브라우저 쿠키 사용은 **기본 OFF**입니다. 사용자가 설정에서 명시적으로 켜고 로그인형 오류가 발생한 경우에만 로컬 브라우저 쿠키를 이용합니다.
+- 다운로드 URL과 파일은 운영자 서버로 전송하지 않습니다. 대상 사이트와 GitHub의 앱·고정 ffmpeg 릴리스 등 기능 수행에 필요한 제3자 서버에는 직접 연결됩니다.
+- 로그는 로컬에만 저장되며 URL의 사용자정보·경로·query·fragment는 제거됩니다.
+- 안전한 request pinning이 마련되기 전까지 Playwright 브라우저 폴백은 소스 실행과 배포본 모두 비활성화되어 있습니다(`ENABLE_PLAYWRIGHT = False`).
 
-## 설치 / 실행
-
-### 1) 배포본 (일반 사용자) — 권장
-- `SsakSsakKimchiDownloader.exe` **단일 파일**만 받으면 됩니다.
-- ffmpeg 는 **첫 실행 시 자동 다운로드**됩니다 (별도 설치 불필요).
-
-### 2) 소스로 실행 (개발자)
-```bash
-pip install -r requirements.txt
-python main.py
-```
-- ffmpeg 가 PATH 에 없으면 첫 실행 시 자동으로 받아 `%LOCALAPPDATA%` 에 캐시합니다.
-
-### 3) exe 빌드
-```bat
-build.bat
-```
-→ `dist/SsakSsakKimchiDownloader.exe` 생성.
-
----
-
-## 의존성
-
-| 패키지 | 필수? | 용도 |
-|--------|-------|------|
-| `yt-dlp` | ✅ 필수 | 다운로드 코어. 유튜브 변경 추종 위해 **정기 업데이트 권장** |
-| `pywebview` | ✅ 필수 | 앱 UI (Windows 10/11 내장 WebView2 사용) |
-| `curl_cffi` | 권장 | 브라우저 TLS 지문 위장 (봇 차단 우회) |
-| `mutagen` | 권장 | 일부 컨테이너 메타데이터/썸네일 임베딩 보조 |
-| **ffmpeg** | ✅ 필수 | 병합·변환. 앱이 **자동 설치** (수동 설치 불필요) |
-| **Playwright** | ⛔ **개인·소스 전용** | 2단계 최후폴백. 배포 exe 제외. 아래 참고 |
-
-### Playwright (개인·소스 전용)
-- **배포 exe 에는 포함되지 않습니다.** `build.bat` 가 `--exclude-module playwright`
-  로 빌드에서 제외하므로, 배포받은 사용자에겐 적용 대상이 아닙니다(토글도 없음).
-- **소스로 직접 실행할 때만** 자동으로 켜집니다(`ENABLE_PLAYWRIGHT = not frozen`).
-  별도 설정/토글 없이, 1단계+HLS 직접탐색까지 다 실패한 경우에만 최후로 동작합니다.
-- 개인이 쓰려면 한 번만 설치하면 됩니다 (안 깔아도 프로그램은 정상 동작 —
-  이 폴백만 자동으로 건너뜀):
-  ```bash
-  pip install playwright
-  playwright install chromium
-  ```
-
----
+자세한 내용: [개인정보 처리방침](docs/PRIVACY.md) · [최종 사용자 사용권 계약](docs/EULA.txt) · [제3자 소프트웨어 고지](docs/THIRD-PARTY-NOTICES.md)
 
 ## 데이터 위치
-- 설정/로그/ffmpeg 캐시: `%LOCALAPPDATA%\SsakSsakKimchiDownloader\`
-  - `config.json` · `app.log` · `ffmpeg\bin\ffmpeg.exe`
+
+- 설정·로그·검증된 ffmpeg·업데이트 설치본 cache: `%LOCALAPPDATA%\SsakSsakKimchiDownloader\`
 - 기본 저장 폴더: `내 다운로드\싹싹김치 다운로드\`
+- 삭제하려면 앱 제거 후 위 사용자 데이터 폴더를 직접 삭제합니다.
 
----
+## 개발 실행
 
-## 테스트
 ```bash
+python -m pip install -r requirements.txt
+python main.py
+```
+
+`requirements.txt`는 개발용 범위 제약입니다. 상업 릴리스에는 Windows/Python 3.13에서 검토한 전체 전이 의존성을 exact version과 SHA-256으로 고정한 `requirements-release-win.lock`이 별도로 필요합니다. Node.js archive·그 안의 npm 버전·bgutil source는 `bundle-release-lock.json`의 SHA-256·exact version·immutable commit으로 고정되며, 빌드는 PATH의 Node/npm을 사용하지 않습니다.
+
+## 상업 릴리스 빌드
+
+공식 진입점은 `build_installer.bat` 하나입니다. 다음 환경변수를 설정한 Windows 빌드 머신에서 실행합니다.
+
+```bat
+set "SIGNTOOL_EXE=C:\Program Files (x86)\Windows Kits\10\bin\<sdk>\x64\signtool.exe"
+set "SIGN_CERT_SHA1=<40-HEX-CERTIFICATE-THUMBPRINT>"
+set "SIGN_TIMESTAMP_URL=https://<trusted-rfc3161-service>"
+build_installer.bat
+```
+
+릴리스 게이트는 다음을 모두 강제합니다.
+
+1. `main.py`, `version.json`, `version_info.txt`, 홈페이지의 버전 일치
+2. `SIGN_CERT_SHA1`과 앱에 내장된 `TRUSTED_SIGNER_THUMBPRINTS` 일치
+3. 해시가 포함된 exact transitive dependency lock과 확정된 법적 문서
+4. 고정 Node/npm으로 새로 준비한 PO-token side bundle과 PyInstaller 앱 생성
+5. 앱 EXE Authenticode 서명·timestamp·ProductVersion 검증
+6. Inno Setup의 Setup 및 uninstaller 서명
+7. `dist/SsakSsakKimchiDownloader-Setup-v1.9.exe`만 최종 실행 자산으로 존재하는지 재검증
+
+현재 저장소는 실제 인증서 지문·법적 운영자/문의처·검토된 Windows lock과 immutable ffmpeg ZIP/EXE pin이 확정되기 전까지 의도적으로 release build가 실패합니다. 자세한 절차와 승인 조건은 [상업 릴리스 체크리스트](docs/COMMERCIAL-RELEASE-CHECKLIST.md)를 따르세요.
+
+## 검증
+
+```bash
+python -m py_compile main.py prepare_bundle.py release_gate.py test_main.py
 python -m pytest -q
 ```
-UI 비의존 서비스/순수 로직(버전 비교, 포맷 셀렉터, 폴백 계획, 매니페스트 스캔,
-DRM 감지, ffmpeg 무결성 검증, 설정 영속화 등)을 검증합니다.
+
+새 릴리스는 추가로 서명된 Windows clean VM에서 설치·업데이트·제거를 종단 검증해야 합니다.
