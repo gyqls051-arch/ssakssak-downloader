@@ -99,6 +99,7 @@ jobs:
           $j | ConvertTo-Json -Depth 5 | Set-Content version.json -Encoding utf8
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:$env:GH_TOKEN@github.com/gyqls051-arch/ssakssak-downloader.git"
           git add version.json
           git commit -m "chore: bump version.json to $ver [skip ci]"
           git push
