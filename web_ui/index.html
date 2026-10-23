@@ -414,7 +414,7 @@
   </div>
 </div>
 
-<!-- 종료 광고 모달 (바깥 클릭 = 종료 취소 — 실수 종료 방지) -->
+<!-- 진행 중 작업 종료 확인 (광고 없음) -->
 <div class="overlay" id="ovExit" onclick="if(event.target===this)$('ovExit').classList.remove('on')">
   <div class="modal" style="width:404px">
     <div style="padding:20px 20px 0;text-align:center">
@@ -422,52 +422,10 @@
       <div style="font-size:12px;color:var(--muted2);margin-top:4px" id="exitSub">다음에 또 만나요</div>
     </div>
     <div style="padding:18px 20px 20px">
-      <div class="exit-ad" onclick="openPromo()">
-        <img class="exit-img" src="popup_exit.png" alt="OFFCUT STUDIO"
-             onerror="this.closest('.exit-ad').classList.add('noimg');this.remove()">
-        <span class="tag">AD</span>
-        <div class="exit-fallback">
-          <div style="display:flex;align-items:center;gap:10px">
-            <div class="o">O</div>
-            <span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span>
-          </div>
-          <div class="h">영상 제작의 모든 것,<br>한 곳에서 끝내세요</div>
-          <div class="d">촬영 · 편집 · 자막 · 납품까지 이어지는 올인원 워크스페이스. 지금 무료로 시작해 보세요.</div>
-          <span class="cta">무료로 시작하기 →</span>
-        </div>
-      </div>
       <div style="display:flex;gap:8px;margin-top:14px">
         <button class="btn-cancel" style="flex:1;height:38px;display:none" id="exitStay"
                 onclick="$('ovExit').classList.remove('on')">계속 사용</button>
         <button class="btn-cancel" style="flex:1;height:38px" id="exitQuit" onclick="closeExit()">닫기</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- 시작 OFFCUT 팝업 (목업) -->
-<div class="overlay" id="ovStart" onclick="if(event.target===this)closeStart()">
-  <div class="modal" style="width:420px">
-    <div style="display:flex;justify-content:flex-end;padding:12px 14px 0">
-      <button class="mx" onclick="closeStart()">✕</button>
-    </div>
-    <div style="padding:0 20px 20px">
-      <div class="exit-ad" onclick="openPromo()">
-        <img class="exit-img" src="popup_start.png" alt="OFFCUT STUDIO"
-             onerror="this.closest('.exit-ad').classList.add('noimg');this.remove()">
-        <span class="tag">AD</span>
-        <div class="exit-fallback">
-          <div style="display:flex;align-items:center;gap:10px"><div class="o">O</div><span style="font-size:13.5px;font-weight:800;color:#fff;letter-spacing:.05em">OFFCUT&nbsp;STUDIO</span></div>
-          <div class="h">영상 제작, 이제<br>한 곳에서 끝내세요</div>
-          <div class="d">촬영 · 편집 · 자막 · 납품까지 올인원 워크스페이스. 싹싹김치 사용자 한정 혜택을 확인해 보세요.</div>
-          <span class="cta">무료로 시작하기 →</span>
-        </div>
-      </div>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
-        <label style="display:flex;align-items:center;gap:7px;cursor:default;font-size:12px;color:#7C7C80">
-          <input type="checkbox" id="startHideChk" style="width:15px;height:15px;accent-color:var(--accent)">오늘 그만 보기
-        </label>
-        <button class="btn-cancel" style="height:34px;padding:0 18px" onclick="closeStart()">닫기</button>
       </div>
     </div>
   </div>
@@ -558,7 +516,7 @@ async function boot(){
   if(!S.init.ffmpeg_ok) S.ffmpegMsg = '필요한 파일 준비 중…';
   renderSmart(); renderFilters(); renderList(); renderStatus();
   if(!S.init.tos_accepted) $('ovTos').classList.add('on');
-  else maybeShowStart();
+
 }
 // pywebview 브리지 준비 레이스 양쪽 대비
 (function(){ if(window.pywebview && window.pywebview.api) boot();
@@ -762,10 +720,11 @@ async function setCookieOptIn(){
   toast(actual ? '브라우저 쿠키 사용을 허용했습니다' : '브라우저 쿠키 사용을 껐습니다');
 }
 
-/* ── 종료 광고 / 약관 ── */
+/* ── 진행 중 작업 종료 확인 / 약관 ── */
 function showExit(){        // Python → JS (창 닫기 시). 진행 중 다운로드가 있으면 경고.
   const t = tally();
   const busy = t.active > 0;
+  if(!busy){ closeExit(); return; }
   $('exitSub').textContent = busy
     ? `⚠ 진행 중인 다운로드 ${t.active}개가 있습니다 — 종료하면 중단됩니다`
     : '다음에 또 만나요';
@@ -776,20 +735,6 @@ function showExit(){        // Python → JS (창 닫기 시). 진행 중 다운
 }
 function closeExit(){ api().exit_confirmed(); }
 function openPromo(){ if(S.init.promo_url) api().open_url(S.init.promo_url); }
-// 시작 팝업: TOS 동의된 실행에서만, '오늘 그만 보기' 안 했으면 1회 노출
-function todayLocal(){   // 로컬 날짜 (toISOString 은 UTC 라 한국 오전 9시에 날짜가 바뀜)
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-function maybeShowStart(){
-  if(localStorage.getItem('ssk_start_hidden') === todayLocal()) return;
-  $('ovStart').classList.add('on');
-}
-function closeStart(){
-  const chk = $('startHideChk');
-  if(chk && chk.checked) localStorage.setItem('ssk_start_hidden', todayLocal());
-  $('ovStart').classList.remove('on');
-}
 async function acceptTos(){
   if(!$('tosChk').checked){ $('tosChk').focus(); toast('약관에 동의해 주세요'); return; }
   await api().accept_tos();
@@ -1069,7 +1014,7 @@ document.addEventListener('keydown', e => {
   if(e.key !== 'Escape') return;
   if($('ovPaste').classList.contains('on')) closePaste();
   else if($('ovSettings').classList.contains('on')) closeSettings();
-  else if($('ovStart').classList.contains('on')) closeStart();
+  else if($('ovExit').classList.contains('on')) $('ovExit').classList.remove('on');
 });
 
 /* ── 전역 붙여넣기: 창 어디서든 Ctrl+V 로 바로 분석 ── */

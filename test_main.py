@@ -807,3 +807,16 @@ def _run_with_fake_ydl_in(monkeypatch, out_dir, exc):
                     on_done=lambda ok, e: done.append((ok, e)))
     dl.run(_cfg(url="https://s.com/v", out_dir=str(out_dir)))
     return done[-1], len(_FakeYDL.calls)
+
+
+def test_app_updater_uses_absolute_system_powershell(monkeypatch, tmp_path):
+    from pathlib import Path
+    from types import SimpleNamespace
+    monkeypatch.setattr(main, "TRUSTED_SIGNER_THUMBPRINTS", ("A" * 40,))
+    def run(args, **kwargs):
+        assert Path(args[0]).is_absolute(), "Never resolve the trust verifier through PATH"
+        assert Path(args[0]).name.lower() == "powershell.exe"
+        return SimpleNamespace(returncode=0, stdout=json.dumps({
+            "Status": "Valid", "Thumbprint": "A" * 40, "ProductVersion": "1.10"}))
+    monkeypatch.setattr(main.subprocess, "run", run)
+    main.AppUpdater._verify_windows_trust(tmp_path / "Setup.exe", "1.10")

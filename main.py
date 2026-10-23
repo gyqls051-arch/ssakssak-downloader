@@ -2395,11 +2395,21 @@ class AppUpdater:
             "[ordered]@{Status=[string]$s.Status;Thumbprint=$thumb;"
             "ProductVersion=[string]$f.ProductVersion}|ConvertTo-Json -Compress"
         )
+        # Resolve the verifier from Windows itself; PATH/current-directory lookup
+        # could execute a different powershell.exe and forge a successful trust result.
+        import ctypes
+        system_dir = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetSystemDirectoryW(system_dir, len(system_dir))
+        if length <= 0 or length >= len(system_dir):
+            raise RuntimeError("Windows 시스템 경로를 확인하지 못했습니다")
+        powershell = Path(system_dir.value) / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        if not powershell.is_absolute() or not powershell.is_file() or powershell.is_symlink():
+            raise RuntimeError("Windows 시스템 서명 검사기를 찾지 못했습니다")
         env = os.environ.copy()
         env["SSAK_SETUP_PATH"] = str(path.resolve())
         try:
             result = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
                 capture_output=True, text=True, timeout=25, check=False, env=env,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -3384,7 +3394,7 @@ class Api:
             pass
 
     def win_close(self) -> None:
-        # 종료 시 광고 1회 노출 → JS 가 exit_confirmed 로 실제 종료
+        # 유휴 상태는 즉시 종료, 진행 중 다운로드는 JS 확인 후 종료
         self._js("showExit()")
 
     def exit_confirmed(self) -> None:
