@@ -290,7 +290,9 @@ def test_ffmpeg_static_pins_resolve_without_api(monkeypatch):
         FfmpegInstaller.MIN_EXE_BYTES, "b" * 64)
 
 
-def test_ffmpeg_missing_static_pins_fail_before_network(monkeypatch):
+@pytest.mark.parametrize("field,empty", [("RELEASE_TAG", ""), ("ASSET_NAME", ""), ("URL", ""), ("EXPECTED_SIZE", 0), ("EXPECTED_SHA256", ""), ("EXPECTED_EXE_SIZE", 0), ("EXPECTED_EXE_SHA256", "")])
+def test_ffmpeg_missing_static_pins_fail_before_network(monkeypatch, field, empty):
+    monkeypatch.setattr(main.FfmpegInstaller, field, empty)
     called = False
 
     def unexpected_network(*args, **kwargs):

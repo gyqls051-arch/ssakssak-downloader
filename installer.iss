@@ -12,8 +12,12 @@
   #error MyFileVersion must be supplied by build_installer.bat
 #endif
 
+#ifndef PotBundleDir
+#define PotBundleDir "potprovider"
+#endif
+
 #define MyAppName "싹싹김치 다운로더"
-#define MyAppPublisher "RELEASE_BLOCKER_LEGAL_PUBLISHER"
+#define MyAppPublisher "싹싹김치"
 #define MyAppURL "https://github.com/gyqls051-arch/ssakssak-downloader"
 #define MyAppExeName "SsakSsakKimchiDownloader.exe"
 
@@ -49,9 +53,13 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 ; build_installer.bat이 --signtool=release=... 를 반드시 주입한다.
+#ifndef UnsignedManualBuild
 SignTool=release
 SignedUninstaller=yes
 SignedUninstallerDir=build\signed-uninstaller
+#else
+SignedUninstaller=no
+#endif
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
@@ -61,13 +69,15 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
+Source: "APP-ICON-LICENSE.txt"; DestDir: "{app}\docs"; Flags: ignoreversion
 ; 서명·버전 검증을 마친 내부 앱. 이 raw EXE 자체는 배포 금지.
 Source: "build\app\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; 유튜브 PO Token 공급자 (Node.js 런타임 + 토큰 서버 + yt-dlp 플러그인).
-Source: "potprovider\*"; DestDir: "{app}\potprovider"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PotBundleDir}\*"; DestDir: "{app}\potprovider"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; yt-dlp는 hash-locked Python release environment에서 PyInstaller 앱 내부에 포함한다.
 ; writable external engine은 publisher provenance 경계를 우회하므로 설치하지 않는다.
 ; 사용자에게 제공해야 하는 정책·제3자 고지와 실제 release dependency inventory.
+Source: "docs\licenses\*"; DestDir: "{app}\docs\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "docs\EULA.txt"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "docs\PRIVACY.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "docs\THIRD-PARTY-NOTICES.md"; DestDir: "{app}\docs"; Flags: ignoreversion

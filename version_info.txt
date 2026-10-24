@@ -17,7 +17,7 @@ VSVersionInfo(
       [
         StringTable(
           '041204B0',
-          [StringStruct('CompanyName', 'RELEASE_BLOCKER_LEGAL_PUBLISHER'),
+          [StringStruct('CompanyName', '싹싹김치'),
            StringStruct('FileDescription', '싹싹김치 다운로더'),
            StringStruct('FileVersion', '1.10.0.0'),
            StringStruct('InternalName', 'SsakSsakKimchiDownloader'),

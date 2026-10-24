@@ -177,13 +177,13 @@ TRUSTED_UPDATE_HOSTS = frozenset({
 # FFmpeg는 배포 승인 때 immutable release tag/URL과 archive·추출 EXE의
 # size/SHA-256을 독립적으로 확인해 모두 채운다. 하나라도 비어 있으면 기존 cache를
 # 포함해 어떤 ffmpeg.exe도 실행하지 않는다. mutable "latest"는 허용하지 않는다.
-FFMPEG_RELEASE_TAG = ""
-FFMPEG_ASSET_NAME = ""
-FFMPEG_ARCHIVE_URL = ""
-FFMPEG_ARCHIVE_SIZE = 0
-FFMPEG_ARCHIVE_SHA256 = ""
-FFMPEG_EXECUTABLE_SIZE = 0
-FFMPEG_EXECUTABLE_SHA256 = ""
+FFMPEG_RELEASE_TAG = "autobuild-2026-10-23-13-04"
+FFMPEG_ASSET_NAME = "ffmpeg-N-127957-g935f29eaae-win64-gpl.zip"
+FFMPEG_ARCHIVE_URL = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-23-13-04/ffmpeg-N-127957-g935f29eaae-win64-gpl.zip"
+FFMPEG_ARCHIVE_SIZE = 200466434
+FFMPEG_ARCHIVE_SHA256 = "fcf14fbbf9937ead11f464c6ecc73bc30400441ab6048c8cf3c55d77fd1c1042"
+FFMPEG_EXECUTABLE_SIZE = 169039360
+FFMPEG_EXECUTABLE_SHA256 = "6a7f66957267ebe36c087036fa5e3e507c05c3b666416f3b5c2c8ba5de15bf96"
 # 상업 릴리스 코드서명 인증서의 SHA-1 thumbprint를 대문자·공백 없이 넣는다.
 # 비어 있으면 자동 설치는 fail-closed로 중단된다. 인증서 발급 후 앱/Setup을 모두
 # 같은 인증서로 서명하고 이 목록을 릴리스 빌드에서 반드시 채워야 한다.
@@ -3606,8 +3606,10 @@ def main() -> None:
         background_color="#ffffff",
     )
     api._set_window(window)
+    window.events.loaded += lambda: log.info("WebView UI ready")
     try:
-        webview.start(api._post_init, gui="edgechromium")
+        icon_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+        webview.start(api._post_init, gui="edgechromium", icon=str(icon_root / "app.ico"))
     except Exception:
         log.exception("webview start failed")
         raise

@@ -1,32 +1,33 @@
-# 제3자 소프트웨어 고지(배포 전 초안)
+# 제3자 소프트웨어 고지
 
-> **릴리스 차단:** `RELEASE_BLOCKER_THIRD_PARTY_REVIEW` — 실제 Windows release lock, side bundle, PyInstaller 결과를 기준으로 라이선스 담당자가 저작권 고지·라이선스 원문·소스 제공 의무를 확정하기 전에는 배포할 수 없습니다.
+2026-10-24 Windows/Python 3.13 수동 배포 빌드. 실제 고정 의존성 및 원본 라이선스는 docs/licenses와 설치된 python-packages.json에 포함합니다. 각 제3자 구성요소에는 자체 라이선스가 우선 적용됩니다.
 
-싹싹김치 비디오 다운로더는 여러 제3자 프로젝트를 사용합니다. 아래 목록은 검토 범위이며 최종 라이선스 목록이 아닙니다.
-
-| 구성요소 | 사용 형태 | 확인할 원본 |
+| 구성요소 | 버전 | 라이선스/고지 |
 |---|---|---|
-| Python 및 표준 라이브러리 | PyInstaller 애플리케이션 런타임 | Python 배포판 LICENSE/NOTICE |
-| PyInstaller bootloader | 단일 앱 EXE 생성 | PyInstaller 라이선스 및 bootloader 예외 |
-| yt-dlp | hash-locked release 빌드에서 앱 내부에 포함 | 실제 lock 버전의 저장소 LICENSE |
-| pywebview, pythonnet, clr-loader | Windows WebView2 UI | 실제 lock 버전의 package metadata와 LICENSE |
-| mutagen | 미디어 메타데이터 처리 | 실제 lock 버전 LICENSE |
-| bgutil-ytdlp-pot-provider | Python plugin 및 Node.js 토큰 서버 | 고정 source commit의 LICENSE/NOTICE |
-| Node.js와 번들된 구성요소 | 토큰 서버 런타임 | 해당 Node 배포판 LICENSE와 THIRD-PARTY-NOTICES |
-| TypeScript/npm 전이 의존성 | 고정 Node archive를 사용한 토큰 서버 빌드; 배포 전 dev dependency 제거 | package-lock 기준 각 package 라이선스 |
-| FFmpeg/BtbN GPL build | immutable archive·추출 EXE pin 검증 후 별도 실행 파일로 설치 | 정확한 FFmpeg release의 라이선스, configure 옵션, 대응 소스 제공 방식 |
-| Inno Setup | 설치 프로그램 생성 | 사용한 Inno Setup 버전의 라이선스 |
-| WebView2 Runtime | Windows 시스템/런타임 구성요소 | Microsoft 배포 조건 |
+| altgraph | 0.17.5 | MIT |
+| bgutil-ytdlp-pot-provider | 1.3.1 | 동봉 원본 LICENSE 참조 |
+| bottle | 0.13.4 | MIT |
+| cffi | 2.1.1 | MIT-0 |
+| clr-loader | 0.3.1 | 동봉 원본 LICENSE 참조 |
+| mutagen | 1.47.0 | GPL-2.0-or-later |
+| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause |
+| pefile | 2024.8.26 | MIT |
+| proxy-tools | 0.1.0 | MIT |
+| pycparser | 3.12 | BSD-3-Clause |
+| pyinstaller | 6.22.2 | GPLv2-or-later with a special exception which allows to use PyInstaller to build and distribute non-free programs (including commercial ones) |
+| pyinstaller-hooks-contrib | 2026.9 | 동봉 원본 LICENSE 참조 |
+| pythonnet | 3.2.1 | MIT |
+| pywebview | 6.2.1 | BSD 3-Clause License |
+| pywin32-ctypes | 0.2.3 | BSD-3-Clause |
+| setuptools | 84.2.1 | MIT |
+| typing-extensions | 4.16.0 | PSF-2.0 |
+| wheel | 0.48.0 | MIT |
+| yt-dlp | 2026.8.19 | Unlicense |
 
-## 릴리스 전 필수 작업
+Python: PSF License. PyInstaller bootloader에는 상용·독점 프로그램 배포를 허용하는 예외가 있으며 동봉 원문을 확인하세요. Mutagen은 GPL-2.0-or-later로 배포하며 정확한 원본 버전의 소스 위치는 https://pypi.org/project/mutagen/1.47.0/#files 입니다. GPL 구성요소에는 본 앱의 프리웨어 재배포 제한을 적용하지 않습니다.
 
-1. `requirements-release-win.lock`과 `build/release-metadata/python-packages.json`의 모든 직접·전이 패키지를 대조합니다.
-2. `potprovider/server/package-lock.json`의 모든 배포 runtime package와 Node.js 배포판의 동봉 고지를 수집합니다.
-3. PyInstaller가 실제 포함한 DLL/native library까지 SBOM에 기록합니다.
-4. 각 구성요소의 정확한 이름, 버전, 저작권자, SPDX 식별자, 프로젝트 URL을 확정합니다.
-5. 재배포가 요구하는 라이선스 원문과 NOTICE를 설치 폴더 `docs/`에 포함합니다.
-6. 사용 중인 BtbN FFmpeg가 GPL build이므로 해당 binary의 정확한 소스·빌드 설정 제공 또는 유효한 서면 제공 방식 등 GPL 의무를 법률 담당자가 승인해야 합니다.
-7. copyleft 구성요소와 애플리케이션 결합 방식이 소스 제공 범위에 미치는 영향을 법률 검토합니다.
-8. 취약점/라이선스 스캔 결과, 예외 승인, 공급 원본 SHA-256과 Git commit을 릴리스 기록에 보존합니다.
+토큰 공급자: bundle-release-lock.json의 Node.js 22.19.0 및 bgutil 1.3.1 고정 커밋을 사용합니다. 런타임과 공급자의 자체 LICENSE/NOTICE는 potprovider 폴더에 보존됩니다. dev dependencies는 배포 번들에서 제외합니다.
 
-오픈소스 프로젝트의 이름과 상표는 각 소유자에게 귀속되며, 포함 사실이 본 제품에 대한 보증이나 후원을 의미하지 않습니다.
+FFmpeg: autobuild-2026-10-23-13-04 / ffmpeg-N-127957-g935f29eaae-win64-gpl.zip; 앱 EXE에 링크하거나 포함하지 않고, 사용 시 공식 BtbN 고정 자산에서 검증 후 별도 프로그램으로 실행합니다. 정확한 upstream/build/source 정보: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-23-13-04 . FFmpeg 저작권·GPL 및 대응 소스 조건은 해당 배포 원문을 따릅니다.
+
+UI WebView2: Microsoft Edge WebView2 Runtime을 사용하며 해당 런타임은 시스템 설치본을 이용합니다. 새 아이콘의 Lucide 원문 라이선스는 APP-ICON-LICENSE.txt에 있습니다.

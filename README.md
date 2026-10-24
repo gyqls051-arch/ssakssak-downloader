@@ -6,13 +6,13 @@ yt-dlp를 코어 엔진으로 사용하는 Windows 10/11용 영상 다운로더�
 
 ## 사용자 설치
 
-공식 배포 파일은 버전별 **서명된 설치 프로그램 하나**입니다.
+공식 배포 파일은 버전별 설치 프로그램입니다. 인증서가 없는 현재 수동 설치 빌드는 릴리스에 **미서명**으로 표시하며 SHA256SUMS.txt를 제공합니다. 서명 검증을 통과한 빌드만 앱 내부 자동 설치를 허용합니다.
 
-- 현재 canonical 파일명: `SsakSsakKimchiDownloader-Setup-v1.9.exe`
+- 현재 canonical 파일명: `SsakSsakKimchiDownloader-Setup-v1.10.exe`
 - 다운로드: [GitHub Releases](https://github.com/gyqls051-arch/ssakssak-downloader/releases/latest)
 - 환경: Windows 10/11, 설치형, 약 88MB(릴리스에 따라 달라질 수 있음)
 
-다운로드한 파일의 이름과 디지털 서명을 확인하세요. Windows 파일 속성에서 서명이 유효하지 않거나 게시자가 공식 릴리스 안내와 다르면 실행하지 말고 [GitHub Issues](https://github.com/gyqls051-arch/ssakssak-downloader/issues)에 신고하세요. SmartScreen 또는 “알 수 없는 게시자” 경고를 우회해 실행하면 안 됩니다.
+공식 GitHub 릴리스의 파일명·SHA256SUMS.txt·미서명 여부를 대조하세요. 서명판이라고 안내된 파일의 서명이 없거나 유효하지 않은 경우 사용하지 말고 GitHub Issues에 신고하세요. 미서명 수동 설치판을 신뢰된 자동 업데이트로 처리하지 않습니다.
 
 `build/app/SsakSsakKimchiDownloader.exe`와 `potprovider/`는 설치 프로그램을 만들기 위한 내부 산출물입니다. 이 파일·폴더를 개별 배포하면 필수 구성요소와 업데이트 신뢰 경계가 깨지므로 **배포 금지**입니다.
 
@@ -70,7 +70,7 @@ build_installer.bat
 4. 고정 Node/npm으로 새로 준비한 PO-token side bundle과 PyInstaller 앱 생성
 5. 앱 EXE Authenticode 서명·timestamp·ProductVersion 검증
 6. Inno Setup의 Setup 및 uninstaller 서명
-7. `dist/SsakSsakKimchiDownloader-Setup-v1.9.exe`만 최종 실행 자산으로 존재하는지 재검증
+7. `dist/SsakSsakKimchiDownloader-Setup-v1.10.exe`만 최종 실행 자산으로 존재하는지 재검증
 
 현재 저장소는 실제 인증서 지문·법적 운영자/문의처·검토된 Windows lock과 immutable ffmpeg ZIP/EXE pin이 확정되기 전까지 의도적으로 release build가 실패합니다. 자세한 절차와 승인 조건은 [상업 릴리스 체크리스트](docs/COMMERCIAL-RELEASE-CHECKLIST.md)를 따르세요.
 

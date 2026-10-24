@@ -366,14 +366,14 @@ def _ffmpeg_pin_failures() -> list[str]:
     return failures
 
 
-def static_failures() -> tuple[ReleaseMetadata | None, list[str]]:
+def static_failures(*, unsigned: bool = False) -> tuple[ReleaseMetadata | None, list[str]]:
     failures: list[str] = []
     try:
         metadata = load_metadata()
     except GateError as exc:
         return None, [str(exc)]
 
-    if not metadata.trusted_thumbprints:
+    if not unsigned and not metadata.trusted_thumbprints:
         failures.append(
             "main.py TRUSTED_SIGNER_THUMBPRINTS is empty; automatic updates and release builds stay blocked"
         )
@@ -387,6 +387,10 @@ def static_failures() -> tuple[ReleaseMetadata | None, list[str]]:
                 f"unresolved legal/release placeholder in {path.relative_to(ROOT)} ({BLOCKER_TOKEN})"
             )
 
+    if unsigned:
+        wrapper = _read(ROOT / "installer-ci.iss").strip()
+        if wrapper != '#define UnsignedManualBuild\n#include "installer.iss"':
+            failures.append("unsigned installer wrapper must include the unchanged canonical installer")
     installer = _read(ROOT / "installer.iss")
     compact_installer = re.sub(r"[ \t]", "", installer)
     required_installer_fragments = (

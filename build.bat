@@ -56,6 +56,8 @@ echo [6/8] Building the internal PyInstaller app...
     --windowed ^
     --name "SsakSsakKimchiDownloader" ^
     --icon "app.ico" ^
+    --add-data "app.ico;." ^
+    --add-data "APP-ICON-LICENSE.txt;." ^
     --version-file "version_info.txt" ^
     --distpath "build\app" ^
     --workpath "build\pyinstaller" ^

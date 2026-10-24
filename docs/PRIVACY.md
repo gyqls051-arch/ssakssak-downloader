@@ -1,6 +1,6 @@
-# 개인정보 처리방침(배포 전 초안)
+# 개인정보 처리 안내
 
-> **릴리스 차단:** 운영자 `RELEASE_BLOCKER_LEGAL_NAME`, 개인정보 문의처 `RELEASE_BLOCKER_PRIVACY_CONTACT`, 시행일 `RELEASE_BLOCKER_EFFECTIVE_DATE`를 확정하고 실제 동작과 법률 검토를 완료하기 전에는 배포할 수 없습니다.
+> 운영자: 싹싹김치 · 문의: https://github.com/gyqls051-arch/ssakssak-downloader/issues · 시행일: 2026-10-24
 
 ## 1. 적용 범위
 
@@ -39,11 +39,11 @@
 
 ## 7. 보안
 
-업데이트 설치 파일은 허용된 HTTPS host, canonical 파일명, 크기, SHA-256, PE 형식, Authenticode signer 및 ProductVersion을 모두 확인합니다. 로그 URL은 redaction하며 설정 파일은 임시 파일·fsync·원자 교체 방식으로 저장합니다. 어떤 소프트웨어도 절대적인 보안을 보장할 수는 없습니다.
+자동 업데이트로 받는 서명된 설치 파일은 허용된 HTTPS host, canonical 파일명, 크기, SHA-256, PE 형식, Authenticode signer 및 ProductVersion을 모두 확인합니다. 로그 URL은 redaction하며 설정 파일은 임시 파일·fsync·원자 교체 방식으로 저장합니다. 어떤 소프트웨어도 절대적인 보안을 보장할 수는 없습니다.
 
 ## 8. 아동, 국제 이전 및 권리 행사
 
-대상 연령, 적용 법률, 국제 이전 고지, 개인정보 권리 행사 절차는 법적 운영 지역과 유통 국가를 확정한 뒤 추가해야 합니다. 문의는 확정된 개인정보 문의처로 접수합니다.
+앱은 운영자 자체 회원가입·원격 수집 기능을 제공하지 않습니다. 외부 서비스의 이용 조건과 연령 제한은 해당 서비스에 따릅니다. 로컬 데이터 삭제 방법은 제6항을 참고하고, 프로그램의 데이터 처리 문의는 위 GitHub Issues로 접수해 주세요. 공개 게시판에 URL 토큰·쿠키·개인 로그를 올리지 마세요.
 
 ## 9. 변경
 

@@ -52,6 +52,8 @@ jobs:
           pyinstaller --noconfirm --onefile --windowed `
             --name "SsakSsakKimchiDownloader" `
             --icon "app.ico" `
+            --add-data "app.ico;." `
+            --add-data "APP-ICON-LICENSE.txt;." `
             --version-file "version_info.txt" `
             --add-data "web_ui;web_ui" `
             --collect-all webview `
