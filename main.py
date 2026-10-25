@@ -3638,10 +3638,14 @@ def main() -> None:
             log.exception("publisher update helper failed")
             raise
         return
-    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+    if len(sys.argv) in (2, 3) and sys.argv[1] == "--self-test":
         assert potprovider_dir() is not None, "Missing runtime side bundle"
         assert Path(_ui_html_path()).is_file(), "Missing packaged UI"
-        print(json.dumps({"version": APP_VERSION, "engine": yt_dlp.version.__version__, "publisher_key": publisher_update.PUBLIC_KEY}))
+        health = {"version": APP_VERSION, "engine": yt_dlp.version.__version__, "publisher_key": publisher_update.PUBLIC_KEY}
+        if len(sys.argv) == 3:
+            publisher_update.atomic_json(Path(sys.argv[2]), health)
+        elif sys.stdout is not None:
+            print(json.dumps(health))
         return
     instance = publisher_update.single_instance()
     if instance is None:

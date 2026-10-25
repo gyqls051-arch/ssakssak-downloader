@@ -181,6 +181,10 @@ def refresh():
     data=api(trust.CHANNEL_URL);body=data['payload']
     # Authenticate the previous channel even if its TTL has elapsed.
     trust.verify_manifest(trust.canonical(data),'0.0',now=body['issued'])
+    latest=json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/releases/latest'],text=True))
+    if latest['tag_name']!='v'+body['version']:raise ValueError('Stale channel; refusing to re-sign')
+    asset=next((a for a in latest['assets'] if a['name']==f"{trust.PRODUCT}-Setup-v{body['version']}.exe"),None)
+    if not asset or asset['size']!=body['size'] or asset.get('digest')!='sha256:'+body['sha256']:raise ValueError('Channel/release bytes differ')
     key=Ed25519PrivateKey.from_private_bytes(base64.b64decode(os.environ['PUBLISHER_UPDATE_KEY'],validate=True))
     if key.public_key().public_bytes_raw().hex()!=trust.PUBLIC_KEY: raise ValueError('Wrong renewal key')
     body['issued']=int(time.time());body['expires']=body['issued']+7*86400

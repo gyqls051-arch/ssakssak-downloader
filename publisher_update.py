@@ -144,6 +144,7 @@ class PublisherUpdater:
 
     def download(self, release, cancelled=lambda: False):
         self.root.mkdir(parents=True, exist_ok=True)
+        self.prune_cache()
         directory = Path(tempfile.mkdtemp(prefix='verified-', dir=self.root))
         target = directory/release.name
         started = time.monotonic()
@@ -159,12 +160,30 @@ class PublisherUpdater:
                     output.write(chunk)
                 output.flush(); os.fsync(output.fileno())
             verify_file(target, release)
+            atomic_json(directory/'manifest.json',json.loads(release.raw))
             # Expiry and signature are checked again immediately before execution too.
             return target
         except Exception:
             target.unlink(missing_ok=True)
             directory.rmdir()
             raise
+
+    def prune_cache(self):
+        """Keep two recent authenticated caches/backups, plus the next download."""
+        owned=[]
+        if self.root.is_symlink() or getattr(self.root.stat(),'st_file_attributes',0)&1024:
+            raise ValueError('Reparse update cache')
+        for directory in self.root.glob('verified-*'):
+            if not directory.is_dir() or directory.is_symlink():continue
+            try:
+                raw=(directory/'manifest.json').read_bytes();body=json.loads(raw)['payload']
+                verify_manifest(raw,'0.0',public_key=self.public_key,now=body['issued'])
+                if any(p.is_symlink() or getattr(p.stat(),'st_file_attributes',0)&1024 for p in [directory,*directory.rglob('*')]):continue
+                if directory.resolve().parent!=self.root.resolve():continue
+                owned.append(directory)
+            except (OSError,ValueError,KeyError,TypeError):continue
+        for directory in sorted(owned,key=lambda p:p.stat().st_mtime,reverse=True)[2:]:
+            shutil.rmtree(directory)
 
     def launch_helper(self, setup, release, executable):
         release = verify_manifest(release.raw, self.current, minimum=self.state().get('highest'), public_key=self.public_key)
@@ -234,6 +253,7 @@ def apply_ticket(ticket_path):
     setup=ticket_path.parent/release.name
     backup=ticket_path.parent/'previous'; backup.mkdir()
     owned=[PRODUCT+'.exe','potprovider','docs']
+    backup_complete=False
     env=os.environ.copy(); env['PYINSTALLER_RESET_ENVIRONMENT']='1'
     state_path=ticket_path.parent.parent/'state.json'
     try:
@@ -244,21 +264,25 @@ def apply_ticket(ticket_path):
                     raise ValueError('Reparse point in installed payload')
             if source.is_dir(): shutil.copytree(source,backup/name)
             elif source.is_file(): shutil.copy2(source,backup/name)
+        backup_complete=True
         with deny_write_lock(setup):
             release=verify_manifest(release.raw,ticket['current'])
             verify_file(setup,release)
             result=subprocess.run([str(setup),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
                                    '/CLOSEAPPLICATIONS','/AUTORUN=0','/DIR='+str(install)],timeout=300)
         if result.returncode!=0: raise RuntimeError('Installer failed: '+str(result.returncode))
-        probe=subprocess.run([str(exe),'--self-test'],env=env,capture_output=True,text=True,timeout=45)
-        if probe.returncode!=0 or json.loads(probe.stdout).get('version')!=release.version:
+        health=ticket_path.parent/'health.json'
+        health.unlink(missing_ok=True)
+        probe=subprocess.run([str(exe),'--self-test',str(health)],env=env,timeout=45)
+        if probe.returncode!=0 or not health.is_file() or json.loads(health.read_text(encoding='utf-8')).get('version')!=release.version:
             raise RuntimeError('Updated application failed its startup probe')
         atomic_json(state_path,{'highest':release.version,'installed':release.version})
     except Exception as exc:
-        for name in owned:
-            source=backup/name
-            if source.is_dir(): shutil.copytree(source,install/name,dirs_exist_ok=True)
-            elif source.is_file(): shutil.copy2(source,install/name)
+        if backup_complete:
+            for name in owned:
+                source=backup/name
+                if source.is_dir(): shutil.copytree(source,install/name,dirs_exist_ok=True)
+                elif source.is_file(): shutil.copy2(source,install/name)
         atomic_json(state_path,{'highest':release.version,'failed':release.version,'error':str(exc)[:300]})
     finally:
         subprocess.Popen([str(exe)],env=env,close_fds=True)

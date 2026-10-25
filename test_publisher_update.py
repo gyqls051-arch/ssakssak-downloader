@@ -104,6 +104,27 @@ class TrustTests(unittest.TestCase):
             launch.assert_called_once()
             self.assertEqual(launch.call_args.args[0],[str(exe)])
 
+    def test_windowed_startup_probe_writes_health_without_stdout(self):
+        import main
+        with TemporaryDirectory() as tmp:
+            destination=Path(tmp)/'health.json'
+            with patch.object(main.sys,'argv',['SsakSsakKimchiDownloader.exe','--self-test',str(destination)]),patch.object(main.sys,'stdout',None),patch.object(main,'potprovider_dir',return_value=Path(tmp)),patch.object(main,'_ui_html_path',return_value=__file__):
+                main.main()
+            self.assertEqual(json.loads(destination.read_text())['version'],main.APP_VERSION)
+
+    def test_prune_only_authenticated_owned_caches(self):
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for number in range(4):
+                folder=root/('verified-'+str(number));folder.mkdir()
+                (folder/'manifest.json').write_bytes(self.signed())
+                (folder/'old-backup.exe').write_bytes(b'old')
+            unrelated=root/'verified-unrelated';unrelated.mkdir();(unrelated/'keep').write_text('user')
+            service=u.PublisherUpdater('1.11.0',root,None,public_key=self.public)
+            service.prune_cache()
+            self.assertEqual(len(list(root.glob('verified-*'))),3)
+            self.assertEqual((unrelated/'keep').read_text(),'user')
+
     def test_api_update_reserves_both_download_and_analysis_admission(self):
         import main
         api=main.Api()
