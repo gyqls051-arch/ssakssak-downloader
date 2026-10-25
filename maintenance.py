@@ -134,24 +134,47 @@ def publish():
     version=release.version
     source=json.loads(manifest)['payload']['source']
     tag='v'+version
-    exists=subprocess.run(['gh','release','view',tag,'--repo',REPO,'--json','id,isDraft'],capture_output=True,text=True)
-    if exists.returncode:
-        run('gh','release','create',tag,'--repo',REPO,'--target',source,'--draft','--title','싹싹김치 다운로더 '+version,
-            '--notes','무료 Windows 설치판. 앱 내 고정 공개키로 업데이트 전자서명을 검증합니다. Windows Authenticode 인증서는 사용하지 않습니다. 원격 다운로드·소스 검사·설치 검사 통과 빌드. Source: '+source)
-    # Never replace already published immutable assets.
     releases=json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/releases?per_page=100&_={time.time_ns()}'],text=True))
-    current=next(r for r in releases if r['tag_name']==tag)
+    current=next((r for r in releases if r['tag_name']==tag),None)
+    if current is None:
+        request=ROOT/'release-request.json'
+        request.write_text(json.dumps({'tag_name':tag,'target_commitish':source,'draft':True,
+            'name':'싹싹김치 다운로더 '+version,
+            'body':'무료 Windows 설치판. 앱 내 고정 공개키로 업데이트 전자서명을 검증합니다. Windows Authenticode 인증서는 사용하지 않습니다. 실제 다운로드·설치 전환 검사 통과. Source: '+source},ensure_ascii=False),encoding='utf-8')
+        current=json.loads(subprocess.check_output(['gh','api','-X','POST',f'repos/{REPO}/releases','--input',str(request)],text=True))
+    if current['target_commitish']!=source:raise ValueError('Existing release belongs to a different candidate')
+    # Keep the exact creation response ID. A newly created draft may not appear in lists yet.
+    release_id=current['id']
     for p in folder.iterdir():
         existing=next((a for a in current['assets'] if a['name']==p.name),None)
         if existing:
             if existing.get('digest')!='sha256:'+hashlib.sha256(p.read_bytes()).hexdigest(): raise ValueError('Existing release differs')
-        else:run('gh','release','upload',tag,'--repo',REPO,str(p))
-    remote=json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/releases/{current["id"]}'],text=True))
+        else:
+            from urllib.parse import quote
+            upload=f'https://uploads.github.com/repos/{REPO}/releases/{release_id}/assets?name={quote(p.name)}'
+            request=urllib.request.Request(upload,data=p.read_bytes(),method='POST',headers={
+                'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Content-Type':'application/octet-stream',
+                'Accept':'application/vnd.github+json','User-Agent':'SsakSsak-Maintenance'})
+            with urllib.request.urlopen(request,timeout=180) as response:uploaded=json.load(response)
+            if uploaded.get('digest')!='sha256:'+hashlib.sha256(p.read_bytes()).hexdigest():raise ValueError('Uploaded asset digest differs')
+    remote=json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/releases/{release_id}?_={time.time_ns()}'],text=True))
     for p in folder.iterdir():
         asset=next(a for a in remote['assets'] if a['name']==p.name)
         if asset.get('digest')!='sha256:'+hashlib.sha256(p.read_bytes()).hexdigest() or asset['size']!=p.stat().st_size: raise ValueError('Remote asset mismatch')
-    run('gh','release','edit',tag,'--repo',REPO,'--draft=false','--latest')
+    run('gh','api','-X','PATCH',f'repos/{REPO}/releases/{release_id}','-F','draft=false','-f','make_latest=true')
     update_channel(manifest,version)
+
+
+def resume_publish(run_id):
+    if not re.fullmatch('[0-9]+',run_id):raise ValueError('Invalid validated run ID')
+    jobs=json.loads(subprocess.check_output(['gh','api',f'repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100'],text=True))['jobs']
+    for name in ['build','sign','transition']:
+        if not any(j['name']==name and j['conclusion']=='success' for j in jobs):raise ValueError('Run did not pass '+name)
+    manifest=json.loads((ROOT/'release-assets/publisher-manifest.json').read_bytes())
+    changed=subprocess.check_output(['git','diff','--name-only',manifest['payload']['source'],'HEAD'],text=True,cwd=ROOT).splitlines()
+    allowed={'maintenance.py','test_maintenance.py','.github/workflows/maintenance.yml'}
+    if set(changed)-allowed:raise ValueError('Application changed after validation; rebuild required')
+    publish()
 
 
 def update_channel(manifest,version):
@@ -192,10 +215,11 @@ def refresh():
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','smoke','sign','publish','refresh']);p.add_argument('--force',action='store_true');p.add_argument('--source')
+    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','smoke','sign','publish','refresh','resume']);p.add_argument('--force',action='store_true');p.add_argument('--source');p.add_argument('--run')
     args=p.parse_args()
     if args.action=='prepare':prepare(args.force)
     elif args.action=='smoke':smoke(args.source)
     elif args.action=='sign':sign()
     elif args.action=='publish':publish()
     elif args.action=='refresh':refresh()
+    elif args.action=='resume':resume_publish(args.run)
