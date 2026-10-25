@@ -2858,11 +2858,20 @@ def read_clipboard_text() -> str:
         u32.CloseClipboard()
 
 
+class _PublisherRedirectHandler(_PublicRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        absolute = urllib.parse.urljoin(req.full_url, newurl)
+        _require_trusted_https_url(absolute, TRUSTED_UPDATE_HOSTS | frozenset({"raw.githubusercontent.com"}), "전자서명 업데이트 리디렉션")
+        return super().redirect_request(req, fp, code, msg, headers, absolute)
+
+
 def _publisher_open(url: str):
     hosts = TRUSTED_UPDATE_HOSTS | frozenset({"raw.githubusercontent.com"})
     _require_trusted_https_url(url, hosts, "전자서명 업데이트 주소")
     request = urllib.request.Request(url, headers={"User-Agent": HTTP_UA})
-    response = urllib.request.urlopen(request, timeout=20)
+    validate_public_http_url(url)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _PinnedHTTPSHandler(), _PublisherRedirectHandler())
+    response = opener.open(request, timeout=20)
     try:
         _require_trusted_response_url(response, url, hosts, "전자서명 업데이트 리디렉션")
     except Exception:

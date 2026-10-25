@@ -134,5 +134,15 @@ class TrustTests(unittest.TestCase):
             self.assertFalse(api.start_download('test_job','https://example.com/a.mp4',main.QUALITY_TABLE[0][0],main.FORMAT_TABLE[0][0])['ok'])
         api._shutdown()
 
+    def test_updater_redirect_rejected_before_connecting_to_untrusted_host(self):
+        import main
+        import urllib.request
+        handler=main._PublisherRedirectHandler()
+        req=urllib.request.Request('https://github.com/'+u.REPOSITORY+'/releases/latest')
+        for url in ['http://github.com/insecure','https://127.0.0.1/private','https://attacker.example/file.exe']:
+            with self.subTest(url=url),patch.object(main,'validate_public_http_url') as public:
+                with self.assertRaises(RuntimeError):handler.redirect_request(req,None,302,'redirect',{},url)
+                public.assert_not_called()
+
 
 if __name__ == '__main__': unittest.main()
