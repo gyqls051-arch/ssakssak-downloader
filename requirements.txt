@@ -23,3 +23,6 @@ mutagen>=1.47
 # Playwright 브라우저 폴백은 안전한 request pinning 전까지 소스·배포본 모두
 # 비활성화되어 있다(ENABLE_PLAYWRIGHT = False). 배포 EXE에서도 명시적으로 제외한다.
 # playwright는 현재 제품 의존성에 포함하지 않는다.
+
+# 앱 내 공개키 기반 배포 전자서명 검증
+cryptography>=50.0.2,<51

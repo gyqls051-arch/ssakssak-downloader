@@ -78,6 +78,7 @@ Source: "{#PotBundleDir}\*"; DestDir: "{app}\potprovider"; Flags: ignoreversion 
 ; writable external engine은 publisher provenance 경계를 우회하므로 설치하지 않는다.
 ; 사용자에게 제공해야 하는 정책·제3자 고지와 실제 release dependency inventory.
 Source: "docs\licenses\*"; DestDir: "{app}\docs\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "docs\AUTOMATIC-UPDATES.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "docs\EULA.txt"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "docs\PRIVACY.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "docs\THIRD-PARTY-NOTICES.md"; DestDir: "{app}\docs"; Flags: ignoreversion

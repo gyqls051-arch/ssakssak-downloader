@@ -8,7 +8,7 @@ yt-dlp를 코어 엔진으로 사용하는 Windows 10/11용 영상 다운로더�
 
 공식 배포 파일은 버전별 설치 프로그램입니다. 인증서가 없는 현재 수동 설치 빌드는 릴리스에 **미서명**으로 표시하며 SHA256SUMS.txt를 제공합니다. 서명 검증을 통과한 빌드만 앱 내부 자동 설치를 허용합니다.
 
-- 현재 canonical 파일명: `SsakSsakKimchiDownloader-Setup-v1.10.exe`
+- 현재 canonical 파일명: `SsakSsakKimchiDownloader-Setup-v1.11.0.exe`
 - 다운로드: [GitHub Releases](https://github.com/gyqls051-arch/ssakssak-downloader/releases/latest)
 - 환경: Windows 10/11, 설치형, 약 88MB(릴리스에 따라 달라질 수 있음)
 
@@ -70,7 +70,7 @@ build_installer.bat
 4. 고정 Node/npm으로 새로 준비한 PO-token side bundle과 PyInstaller 앱 생성
 5. 앱 EXE Authenticode 서명·timestamp·ProductVersion 검증
 6. Inno Setup의 Setup 및 uninstaller 서명
-7. `dist/SsakSsakKimchiDownloader-Setup-v1.10.exe`만 최종 실행 자산으로 존재하는지 재검증
+7. `dist/SsakSsakKimchiDownloader-Setup-v1.11.0.exe`만 최종 실행 자산으로 존재하는지 재검증
 
 현재 저장소는 실제 인증서 지문·법적 운영자/문의처·검토된 Windows lock과 immutable ffmpeg ZIP/EXE pin이 확정되기 전까지 의도적으로 release build가 실패합니다. 자세한 절차와 승인 조건은 [상업 릴리스 체크리스트](docs/COMMERCIAL-RELEASE-CHECKLIST.md)를 따르세요.
 
@@ -82,3 +82,7 @@ python -m pytest -q
 ```
 
 새 릴리스는 추가로 서명된 Windows clean VM에서 설치·업데이트·제거를 종단 검증해야 합니다.
+
+## 자동 업데이트
+
+1.11 전환 버전부터 공개키로 배포 전자서명을 검증하고, 작업이 없는 때 자동 적용합니다. 이전 버전은 한 번 직접 설치해야 합니다. 유지보수 CI와 실패 복구 범위는 [자동 업데이트 계약](docs/AUTOMATIC-UPDATES.md)을 참고하세요.

@@ -39,6 +39,9 @@
 
 ## 7. 보안
 
+1.11부터 별도 배포 전자서명 경로는 앱 내부 고정 Ed25519 공개키로 제품·버전·크기·SHA256·유효기간·출처 commit을 확인한 Setup만 유휴 상태에서 적용합니다. updater 상태·직전 앱 백업·실패 기록은 로컬 updates/publisher 아래 보관됩니다. 자세한 동작과 복구 경계는 AUTOMATIC-UPDATES.md를 참고하세요.
+
+
 자동 업데이트로 받는 서명된 설치 파일은 허용된 HTTPS host, canonical 파일명, 크기, SHA-256, PE 형식, Authenticode signer 및 ProductVersion을 모두 확인합니다. 로그 URL은 redaction하며 설정 파일은 임시 파일·fsync·원자 교체 방식으로 저장합니다. 어떤 소프트웨어도 절대적인 보안을 보장할 수는 없습니다.
 
 ## 8. 아동, 국제 이전 및 권리 행사

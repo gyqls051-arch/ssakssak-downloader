@@ -7,6 +7,7 @@
 | altgraph | 0.17.5 | MIT |
 | bgutil-ytdlp-pot-provider | 1.3.1 | 동봉 원본 LICENSE 참조 |
 | bottle | 0.13.4 | MIT |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause; 원문 docs/licenses/cryptography |
 | cffi | 2.1.1 | MIT-0 |
 | clr-loader | 0.3.1 | 동봉 원본 LICENSE 참조 |
 | mutagen | 1.47.0 | GPL-2.0-or-later |

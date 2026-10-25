@@ -132,6 +132,7 @@ _ENGINE_PATH = _activate_engine()
 
 import webview
 import yt_dlp
+import publisher_update
 
 
 # ============================================================
@@ -139,7 +140,7 @@ import yt_dlp
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.10"
+APP_VERSION = "1.11.0"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -2857,6 +2858,19 @@ def read_clipboard_text() -> str:
         u32.CloseClipboard()
 
 
+def _publisher_open(url: str):
+    hosts = TRUSTED_UPDATE_HOSTS | frozenset({"raw.githubusercontent.com"})
+    _require_trusted_https_url(url, hosts, "전자서명 업데이트 주소")
+    request = urllib.request.Request(url, headers={"User-Agent": HTTP_UA})
+    response = urllib.request.urlopen(request, timeout=20)
+    try:
+        _require_trusted_response_url(response, url, hosts, "전자서명 업데이트 리디렉션")
+    except Exception:
+        response.close()
+        raise
+    return response
+
+
 class Api:
     """JS(window.pywebview.api)에서 호출하는 백엔드. 모든 사이드이펙트는 여기 격리."""
 
@@ -2866,6 +2880,8 @@ class Api:
         #   안 붙는다. 그래서 메서드가 아닌 내부 상태는 전부 '_' 접두사로 둬서
         #   pywebview 가 건너뛰게 한다. (JS 에 노출할 것은 메서드뿐.)
         self._window = None
+        self._publisher = publisher_update.PublisherUpdater(APP_VERSION, app_update_dir()/"publisher", _publisher_open)
+        self._stop_updates = threading.Event()
         self._settings = Settings()
         self._cfg = self._settings.load()
         self._analyzer = VideoAnalyzer()
@@ -3017,6 +3033,7 @@ class Api:
                 already_closing = True
             else:
                 self._closing = True
+                self._stop_updates.set()
                 already_closing = False
                 active = list(self._active.items())
                 workers = dict(self._workers)
@@ -3149,7 +3166,7 @@ class Api:
         if not self._analysis_slots.acquire(blocking=False):
             return {"ok": False, "error": "분석 작업이 많습니다. 잠시 후 다시 시도해 주세요"}
         with self._analysis_condition:
-            if self._closing:
+            if self._closing or self._updating:
                 self._analysis_slots.release()
                 return {"ok": False, "error": "앱을 종료하는 중입니다"}
             self._analysis_active += 1
@@ -3196,7 +3213,7 @@ class Api:
         if not self._valid_choice(fmt, FORMAT_TABLE):
             return {"ok": False, "error": "지원하지 않는 파일 형식입니다"}
         with self._state_lock:
-            if self._closing:
+            if self._closing or self._updating:
                 return {"ok": False, "error": "앱을 종료하는 중입니다"}
             if job_id in self._active or job_id in self._files:
                 return {"ok": False, "error": "이미 사용 중인 작업 식별자입니다"}
@@ -3243,7 +3260,7 @@ class Api:
             target=self._run_download_worker, args=(job_id, dl, cfg),
             name=f"download-{job_id}", daemon=True)
         with self._state_lock:
-            if self._closing:
+            if self._closing or self._updating:
                 return {"ok": False, "error": "앱을 종료하는 중입니다"}
             if job_id in self._active or len(self._active) >= MAX_ACTIVE_DOWNLOADS:
                 return {"ok": False, "error": "다운로드 작업 수 제한을 초과했습니다"}
@@ -3489,11 +3506,44 @@ class Api:
 
     def _post_init(self) -> None:
         """WebView 시작 콜백. 종료 시 추적할 background 작업만 시작한다."""
-        self._start_background("update-checker", self._kill_and_update)
+        self._start_background("publisher-updater", self._automatic_update_loop)
         if self._ffmpeg_dir is None:
             self._start_background("ffmpeg-installer", self._install_ffmpeg)
         # 클립보드 자동 감지는 두지 않는다 — 사용자가 링크 칸에 '붙여넣을 때만'
         # 팝업이 뜨게 한다(복사만 해도 자동으로 뜨는 동작 제거).
+
+    def _automatic_update_loop(self) -> None:
+        # Source runs never install over a development checkout.
+        if not getattr(sys, "frozen", False):
+            return
+        while not self._stop_updates.wait(60):
+            try:
+                release = self._publisher.check()
+                if release is not None:
+                    setup = self._publisher.download(release, self._stop_updates.is_set)
+                    while not self._stop_updates.is_set():
+                        with self._state_lock:
+                            self._analysis_contexts = {k:v for k,v in self._analysis_contexts.items()
+                                                       if time.monotonic()-v[0] <= ANALYSIS_TTL_SECONDS}
+                            idle = (not self._closing and not self._updating and not self._active
+                                    and not self._analysis_active and not self._analysis_contexts)
+                            if idle:
+                                self._updating = True
+                        if idle:
+                            try:
+                                self._js_call("appUpdate", "verifying", 100, "검증한 업데이트를 적용합니다")
+                                self._publisher.launch_helper(setup, release, sys.executable)
+                                self.exit_confirmed()
+                                return
+                            except Exception:
+                                with self._state_lock:
+                                    self._updating = False
+                                raise
+                        self._stop_updates.wait(3)
+            except Exception:
+                log.exception("publisher update rejected; keeping current version")
+            if self._stop_updates.wait(publisher_update.CHECK_SECONDS):
+                return
 
     def _kill_and_update(self) -> None:
         # 독립 서명 manifest가 도입되기 전에는 과거 killswitch 상태를 지우고,
@@ -3579,6 +3629,23 @@ class Api:
 # ============================================================
 
 def main() -> None:
+    # Keep helpers and CI health probes separate from the normal UI/instance lock.
+    if len(sys.argv) == 3 and sys.argv[1] == "--apply-publisher-update":
+        setup_logging()
+        try:
+            publisher_update.apply_ticket(sys.argv[2])
+        except Exception:
+            log.exception("publisher update helper failed")
+            raise
+        return
+    if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+        assert potprovider_dir() is not None, "Missing runtime side bundle"
+        assert Path(_ui_html_path()).is_file(), "Missing packaged UI"
+        print(json.dumps({"version": APP_VERSION, "engine": yt_dlp.version.__version__, "publisher_key": publisher_update.PUBLIC_KEY}))
+        return
+    instance = publisher_update.single_instance()
+    if instance is None:
+        return
     log_file = setup_logging()
     log.info("starting %s v%s (pywebview), log=%s", APP_TITLE, APP_VERSION, log_file)
     log.info("engine: yt-dlp %s (%s)", yt_dlp.version.__version__,
@@ -3595,7 +3662,7 @@ def main() -> None:
         engine_updater = EngineUpdater(yt_dlp.version.__version__)
         engine_thread = engine_updater.start_async()
     else:
-        log.info("engine runtime auto-update disabled; using signed bundled yt-dlp")
+        log.info("engine runtime auto-update disabled; using locked bundled yt-dlp")
     api = Api()
     window = webview.create_window(
         f"{APP_TITLE}",

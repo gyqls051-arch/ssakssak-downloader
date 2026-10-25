@@ -1,0 +1,14 @@
+[
+  {
+    "name": "mutagen",
+    "version": "1.47.0",
+    "url": "https://files.pythonhosted.org/packages/81/e6/64bc71b74eef4b68e61eb921dcf72dabd9e4ec4af1e11891bbd312ccbb77/mutagen-1.47.0.tar.gz",
+    "sha256": "719fadef0a978c31b4cf3c956261b3c58b6948b32023078a2117b1de09f0fc99"
+  },
+  {
+    "name": "bgutil-ytdlp-pot-provider",
+    "commit": "7608dd51ee813b48cf9a6d68c6e42cb197ce10e0",
+    "url": "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/7608dd51ee813b48cf9a6d68c6e42cb197ce10e0.zip",
+    "sha256": "255d9acbbb7540cb5e1ee8be82bc9a8655f1537b6974f3a5213d9398012afbb2"
+  }
+]
