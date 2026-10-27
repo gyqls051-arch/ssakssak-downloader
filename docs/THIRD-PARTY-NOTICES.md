@@ -23,7 +23,7 @@
 | setuptools | 84.2.1 | MIT |
 | typing-extensions | 4.16.0 | PSF-2.0 |
 | wheel | 0.48.0 | MIT |
-| yt-dlp | 2026.10.21 | Unlicense |
+| yt-dlp | 2026.10.26 | Unlicense |
 
 Python: PSF License. PyInstaller bootloader에는 상용·독점 프로그램 배포를 허용하는 예외가 있으며 동봉 원문을 확인하세요. Mutagen은 GPL-2.0-or-later로 배포하며 정확한 원본 버전의 소스 위치는 https://pypi.org/project/mutagen/1.47.0/#files 입니다. GPL 구성요소에는 본 앱의 프리웨어 재배포 제한을 적용하지 않습니다.
 
