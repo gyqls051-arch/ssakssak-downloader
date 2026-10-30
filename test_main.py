@@ -61,9 +61,9 @@ def test_is_safe_http_url(url, ok):
 
 def test_build_format_selector_mp4_prefers_avc_aac():
     sel = build_format_selector("mp4")
-    # 해상도는 셀렉터가 아니라 format_sort(res:N)가 맡는다 — height<=N 필터는
-    # 세로 영상(Shorts 1080×1920)의 FHD 스트림을 걸러내던 버그가 있었다.
-    assert "height<=" not in sel and "avc1" in sel and "mp4a" in sel
+    # 해상도·비디오 코덱은 하드 필터링하지 않고 format_sort가 맡는다 —
+    # vcodec^=avc1 필터는 4K(VP9/AV1)와 고화질 쇼츠·릴스를 1080p·360p로 제한했다.
+    assert "height<=" not in sel and "vcodec^=" not in sel and "mp4a" in sel
 
 
 def test_build_format_selector_mkv_best():
@@ -75,6 +75,60 @@ def test_build_format_sort_uses_short_edge():
     assert build_format_sort(1080) == ["res:1080"]
     assert build_format_sort(None) == []
     assert build_format_sort(-1) == []
+    assert build_format_sort(None, "mp4") == ["res", "vcodec:h264", "acodec:aac"]
+    assert build_format_sort(1080, "mp4") == ["res:1080", "vcodec:h264", "acodec:aac"]
+    assert build_format_sort(-1, "mp4") == []
+
+
+def test_mp4_format_selection_picks_4k_and_hd_shorts_over_low_res_avc():
+    sel = build_format_selector("mp4")
+    formats_4k = [
+        {"format_id": "137", "url": "https://example.com/137", "ext": "mp4",
+         "width": 1920, "height": 1080, "vcodec": "avc1.640028", "acodec": "none", "tbr": 3500},
+        {"format_id": "248", "url": "https://example.com/248", "ext": "webm",
+         "width": 1920, "height": 1080, "vcodec": "vp9", "acodec": "none", "tbr": 4500},
+        {"format_id": "313", "url": "https://example.com/313", "ext": "webm",
+         "width": 3840, "height": 2160, "vcodec": "vp9", "acodec": "none", "tbr": 18000},
+        {"format_id": "140", "url": "https://example.com/140", "ext": "m4a",
+         "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128},
+    ]
+    with main.yt_dlp.YoutubeDL({
+        "format": sel, "format_sort": build_format_sort(None, "mp4"), "quiet": True,
+    }) as ydl:
+        res_auto = ydl.process_ie_result({
+            "id": "t1", "title": "t1", "extractor": "t", "extractor_key": "T",
+            "formats": [dict(f) for f in formats_4k],
+        }, download=False)
+    assert res_auto["requested_formats"][0]["height"] == 2160
+
+    # 동일 해상도(1080p)에서는 호환성 좋은 H.264(137)가 더 높은 비트레이트 VP9(248)보다 우선
+    with main.yt_dlp.YoutubeDL({
+        "format": sel, "format_sort": build_format_sort(1080, "mp4"), "quiet": True,
+    }) as ydl:
+        res_1080 = ydl.process_ie_result({
+            "id": "t2", "title": "t2", "extractor": "t", "extractor_key": "T",
+            "formats": [dict(f) for f in formats_4k],
+        }, download=False)
+    assert res_1080["requested_formats"][0]["format_id"] == "137"
+
+    # 세로 영상에서 H.264가 360×640뿐이고 1080×1920이 VP9일 때 360p로 떨어지지 않는다
+    shorts = [
+        {"format_id": "18", "url": "https://example.com/18", "ext": "mp4",
+         "width": 360, "height": 640, "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "tbr": 500},
+        {"format_id": "248", "url": "https://example.com/248", "ext": "webm",
+         "width": 1080, "height": 1920, "vcodec": "vp9", "acodec": "none", "tbr": 3500},
+        {"format_id": "140", "url": "https://example.com/140", "ext": "m4a",
+         "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128},
+    ]
+    with main.yt_dlp.YoutubeDL({
+        "format": sel, "format_sort": build_format_sort(None, "mp4"), "quiet": True,
+    }) as ydl:
+        res_shorts = ydl.process_ie_result({
+            "id": "t3", "title": "t3", "extractor": "t", "extractor_key": "T",
+            "formats": shorts,
+        }, download=False)
+    assert (res_shorts["requested_formats"][0]["width"],
+            res_shorts["requested_formats"][0]["height"]) == (1080, 1920)
 
 
 # ----------------------------- URL 인식 -----------------------------

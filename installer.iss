@@ -101,3 +101,29 @@ function WantsAutoRun(): Boolean;
 begin
   Result := ExpandConstant('{param:AUTORUN|0}') = '1';
 end;
+
+// 수동/자동 재설치 전 {app} 내부 실행 프로세스(구버전 앱·내장 PO Token 서버)만 정리해
+// Restart Manager 의 '모든 응용 프로그램을 자동으로 닫지 못했습니다' 오류를 방지한다.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  AppDir, EscapedDir, PsExe, Script: String;
+begin
+  Result := '';
+  AppDir := ExpandConstant('{app}');
+  if FileExists(AppDir + '\{#MyAppExeName}') or FileExists(AppDir + '\potprovider\node.exe') then
+  begin
+    PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    if FileExists(PsExe) then
+    begin
+      EscapedDir := AppDir;
+      StringChangeEx(EscapedDir, '''', '''''', True);
+      Script := '$d = [IO.Path]::GetFullPath(''' + EscapedDir + ''').TrimEnd(''\'') + ''\''; ' +
+                'Get-Process -Name ''SsakSsakKimchiDownloader'',''node'' -ErrorAction SilentlyContinue | ' +
+                'Where-Object { $_.Path -and ([IO.Path]::GetFullPath($_.Path)).StartsWith($d, [StringComparison]::OrdinalIgnoreCase) } | ' +
+                'Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 400';
+      Exec(PsExe, '-NoProfile -NonInteractive -WindowStyle Hidden -Command "' + Script + '"',
+           '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
+  end;
+end;

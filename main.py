@@ -140,7 +140,7 @@ import publisher_update
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.11.1"
+APP_VERSION = "1.11.2"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -368,27 +368,35 @@ log = logging.getLogger("ssakssak")
 def build_format_selector(container: str) -> str:
     """컨테이너에 맞춘 yt-dlp 포맷 셀렉터.
 
-    해상도 선호는 여기서 필터링하지 않는다 — 'height<=N' 필터는 세로 영상
-    (Shorts 1080×1920)에서 실제 FHD 스트림을 걸러낸 뒤 480p를 골라버리는
-    버그가 있었다. 화질은 format_sort(res:N)가 '짧은 변' 기준으로 랭킹한다.
-    MP4 선택 시 H.264+AAC만 골라야 재인코딩 없이 무손실로 담긴다."""
+    해상도는 셀렉터에서 하드 필터링하지 않는다 — 'height<=N' 필터는 세로 영상
+    (Shorts 1080×1920)을 480p로 떨어뜨렸고, 'vcodec^=avc1' 하드 필터는 4K(VP9/AV1)
+    또는 고화질 VP9/AV1·HEVC 쇼츠·릴스가 있어도 360p·1080p H.264만 골라버리는
+    문제가 있었다. 해상도 최우선 랭킹과 동일 해상도 내 H.264+AAC 선호는
+    build_format_sort() 가 맡고, MP4 셀렉터는 무손실 병합이 잘 되는 AAC 오디오만
+    우선 결합한다."""
     if container == "mp4":
         return (
-            "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo+bestaudio[acodec^=mp4a]/"
+            "bestvideo+bestaudio[ext=m4a]/"
+            "bestvideo+bestaudio/"
             "best[ext=mp4]/best"
         )
     return "bestvideo+bestaudio/best"
 
 
-def build_format_sort(height: int | None) -> list[str]:
-    """선택 화질의 format_sort 표현.
+def build_format_sort(height: int | None, container: str = "mkv") -> list[str]:
+    """선택 화질·컨테이너의 format_sort 표현.
 
     yt-dlp 의 res 는 min(width,height) 즉 '짧은 변' 이라 가로든 세로든
     사람이 말하는 화질(1080p)과 같다. res:N 은 N 이하를 큰 것부터 먼저,
-    없으면 N 초과 중 가장 작은 것을 고른다 — 조용한 저해상도 폴백 대신
-    가장 가까운 실제 화질을 받는다."""
-    return [f"res:{height}"] if isinstance(height, int) and height > 0 else []
+    없으면 N 초과 중 가장 작은 것을 고른다. MP4 컨테이너에서는 해상도를
+    최우선으로 두고 같은 해상도 안에서 H.264+AAC 를 우선 선택한다."""
+    if isinstance(height, int) and height <= 0:
+        return []
+    res_rule = f"res:{height}" if isinstance(height, int) and height > 0 else "res"
+    if container == "mp4":
+        return [res_rule, "vcodec:h264", "acodec:aac"]
+    return [res_rule] if isinstance(height, int) and height > 0 else []
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -1439,6 +1447,7 @@ class DownloadConfig:
     embed_metadata: bool = True          # 메타데이터 + 썸네일(커버) 삽입
     use_playwright: bool = False         # 2단계 최후폴백. 소스(개인)=True, 배포 exe=False
     target_height: int | None = None     # 선택 화질(짧은 변 px). None=최고화질/음성만
+    expected_height: int | None = None   # 완료 해상도 경고 기준(최고화질 선택 시 분석 최대치 포함)
 
 
 class Downloader:
@@ -1479,6 +1488,7 @@ class Downloader:
         self._last_dims: tuple[int, int] | None = None
         # 사용자가 고른 화질(짧은 변 px). run() 이 cfg에서 채운다.
         self._target_height: int | None = None
+        self._expected_height: int | None = None
 
     def cancel(self) -> None:
         """성공 확정 전 취소만 terminal state에 반영한다."""
@@ -1717,6 +1727,9 @@ class Downloader:
         self._preserve_tmpdir = False
         self._out_dir = cfg.out_dir
         self._target_height = cfg.target_height
+        self._expected_height = (
+            cfg.expected_height if cfg.expected_height is not None else cfg.target_height
+        )
         if self._cancel_event.is_set():
             # start_download() 직후 worker가 돌기 전에 취소된 경우도 존중한다.
             self._on_done(False, DOWNLOAD_CANCELLED)
@@ -1874,11 +1887,12 @@ class Downloader:
         }
         if cfg.ffmpeg_dir:
             opts["ffmpeg_location"] = cfg.ffmpeg_dir
-        if cfg.target_height:
-            # res=min(width,height): 짧은 변 기준으로 선택 화질까지 랭킹한다.
-            # 'height<=N' 필터가 세로 영상(Shorts)에서 FHD 스트림을 걸러낸 채
-            # 480p를 고르던 버그를 고치는 핵심 — 가로/세로 무관하게 동작한다.
-            opts["format_sort"] = build_format_sort(cfg.target_height)
+        if not cfg.is_audio_only:
+            # res=min(width,height): 짧은 변 기준으로 화질을 최우선 랭킹하고,
+            # MP4에서는 동일 해상도 내 H.264+AAC를 선호해 4K·쇼츠 저화질 폴백을 막는다.
+            sort_rules = build_format_sort(cfg.target_height, cfg.container)
+            if sort_rules:
+                opts["format_sort"] = sort_rules
         # 유튜브는 PO Token 이 없으면 스트림 자체를 안 준다 → 서버 지연 기동.
         if is_youtube(cfg.url):
             if not POT.ensure_running():
@@ -2897,13 +2911,15 @@ class Api:
         self._installer = FfmpegInstaller()
         self._updater = UpdateChecker()
         self._app_updater = AppUpdater()
-        # 업데이트 체크 결과. 배너의 '지금 업데이트' 가 이걸 보고 설치본을 받는다.
+        # 업데이트 체크 결과. 팝업·배너의 '지금 업데이트' 가 이걸 보고 설치본을 받는다.
+        self._pending_publisher_release: publisher_update.VerifiedRelease | None = None
         self._pending_update: UpdateDecision | None = None
         self._updating = False
+        self._ui_ready = threading.Event()
         self._ffmpeg_dir = find_ffmpeg()
-        # 분석 결과와 쿠키 사용 여부는 URL별 단기 컨텍스트로 묶는다. 전역 한 칸을
+        # 분석 결과와 쿠키 사용 여부·감지 최대 화질은 URL별 단기 컨텍스트로 묶는다. 전역 한 칸을
         # 공유하면 동시 분석 A의 쿠키 상태가 다운로드 B에 섞일 수 있다.
-        self._analysis_contexts: dict[str, tuple[float, str, str | None]] = {}
+        self._analysis_contexts: dict[str, tuple[float, str, str | None, int | None]] = {}
         self._files: dict[str, str] = {}              # job_id → 최종 파일 경로
         self._job_roots: dict[str, str] = {}          # job_id → 해당 작업 저장 root
         self._active: dict[str, Downloader] = {}      # 동시 진행 중 (job_id → Downloader)
@@ -3043,6 +3059,7 @@ class Api:
             else:
                 self._closing = True
                 self._stop_updates.set()
+                self._ui_ready.set()
                 already_closing = False
                 active = list(self._active.items())
                 workers = dict(self._workers)
@@ -3096,7 +3113,8 @@ class Api:
             log.info("retrying analysis with explicitly enabled %s cookies", browser)
             return self._analyzer.probe(url, browser), browser
 
-    def _remember_analysis(self, url: str, browser: str | None) -> str:
+    def _remember_analysis(self, url: str, browser: str | None,
+                           max_height: int | None = None) -> str:
         now = time.monotonic()
         token = secrets.token_urlsafe(24)
         with self._state_lock:
@@ -3110,25 +3128,28 @@ class Api:
                 oldest = min(self._analysis_contexts,
                              key=lambda key: self._analysis_contexts[key][0])
                 self._analysis_contexts.pop(oldest, None)
-            self._analysis_contexts[token] = (now, url, browser)
+            self._analysis_contexts[token] = (now, url, browser, max_height)
         return token
 
-    def _consume_analysis(self, token: object, url: str) -> tuple[bool, str | None]:
+    def _consume_analysis(self, token: object,
+                          url: str) -> tuple[bool, str | None, int | None]:
         if not isinstance(token, str) or len(token) > 128:
-            return False, None
+            return False, None, None
         with self._state_lock:
             value = self._analysis_contexts.pop(token, None)
         if value is None:
-            return False, None
-        created, analyzed_url, browser = value
+            return False, None, None
+        created, analyzed_url, browser = value[0], value[1], value[2]
+        max_height = value[3] if len(value) > 3 else None
         if time.monotonic() - created > ANALYSIS_TTL_SECONDS or analyzed_url != url:
-            return False, None
-        return True, browser
+            return False, None, None
+        return True, browser, max_height
 
     # ---------------- JS 호출용 API ----------------
 
     def get_init(self) -> dict:
         log.info("bridge ready: get_init called")
+        self._ui_ready.set()
         with self._state_lock:
             cfg = dict(self._cfg)
         return {
@@ -3191,7 +3212,8 @@ class Api:
                 self._analysis_active -= 1
                 self._analysis_condition.notify_all()
             self._analysis_slots.release()
-        analysis_id = self._remember_analysis(url, browser)
+        max_probed_height = max(result.heights) if result.heights else None
+        analysis_id = self._remember_analysis(url, browser, max_probed_height)
         if not analysis_id:
             return {"ok": False, "error": "앱을 종료하는 중입니다"}
         qs = self._qualities_for(result)
@@ -3240,7 +3262,8 @@ class Api:
             save_dir = save_dir.resolve(strict=True)
         except OSError as e:
             return {"ok": False, "error": f"저장 폴더를 만들 수 없습니다: {e}"}
-        context_ok, cookie_browser = self._consume_analysis(analysis_id, url)
+        context_ok, cookie_browser, probed_max_height = self._consume_analysis(
+            analysis_id, url)
         if not context_ok:
             return {"ok": False, "error": "분석 정보가 만료되었습니다. 링크를 다시 분석해 주세요"}
         if not self._cookie_opted_in():
@@ -3251,12 +3274,18 @@ class Api:
         height = dict(QUALITY_TABLE).get(quality)
         container = dict(FORMAT_TABLE).get(fmt, "mp4")
         fmt_str = "bestaudio/best" if is_audio else build_format_selector(container)
+        expected_height = None
+        if not is_audio:
+            expected_height = (
+                height if isinstance(height, int) and height > 0 else probed_max_height
+            )
         cfg = DownloadConfig(
             url=url, out_dir=str(save_dir), format_str=fmt_str,
             is_audio_only=is_audio, container=container, ffmpeg_dir=ffmpeg_dir,
             cookies_browser=cookie_browser, embed_metadata=True,
             use_playwright=False,
             target_height=None if is_audio else height,
+            expected_height=expected_height,
         )
         dl = Downloader(
             on_progress=lambda d, j=job_id: self._on_progress(j, d),
@@ -3378,22 +3407,29 @@ class Api:
         safe_open_url(url)
 
     def start_app_update(self) -> dict:
-        """배너의 '지금 업데이트' → 새 설치본을 받아 조용히 재설치한다."""
+        """팝업·배너의 '지금 업데이트' → 서명 검증된 새 설치본을 받아 재설치한다."""
         with self._state_lock:
             if self._closing:
                 return {"ok": False, "error": "앱을 종료하는 중입니다"}
             if self._updating:
                 return {"ok": True}
+            pub_release = self._pending_publisher_release
             decision = self._pending_update
-            if decision is None:
+            if pub_release is None and decision is None:
                 return {"ok": False, "error": "업데이트 정보를 찾지 못했습니다"}
-            # 설치는 앱을 종료시킨다 → 받는 중인 영상이 있으면 날아간다.
-            if self._active:
+            # 설치는 앱을 종료시킨다 → 받는 중이거나 분석 중이면 끝난 뒤에 진행한다.
+            if self._active or self._analysis_active > 0:
                 return {"ok": False,
-                        "error": "다운로드가 끝난 뒤에 업데이트해 주세요"}
+                        "error": "진행 중인 작업이 끝난 뒤에 업데이트해 주세요"}
+            self._analysis_contexts.clear()
             self._updating = True
+        target = (
+            (self._run_publisher_update, pub_release)
+            if pub_release is not None
+            else (self._run_app_update, decision)
+        )
         try:
-            if not self._start_background("app-updater", self._run_app_update, decision):
+            if not self._start_background("app-updater", target[0], target[1]):
                 with self._state_lock:
                     self._updating = False
                 return {"ok": False, "error": "앱을 종료하는 중입니다"}
@@ -3483,7 +3519,11 @@ class Api:
         # '요청 화질보다 낮음'을 표시해 조용한 저화질 폴백이 없게 한다.
         with self._state_lock:
             dl = self._active.get(jid)
-        target = getattr(dl, "_target_height", None) if dl is not None else None
+        target = (
+            getattr(dl, "_expected_height", None)
+            if dl is not None and getattr(dl, "_expected_height", None) is not None
+            else (getattr(dl, "_target_height", None) if dl is not None else None)
+        )
         res = ""
         warn = False
         if dims:
@@ -3525,53 +3565,93 @@ class Api:
         # Source runs never install over a development checkout.
         if not getattr(sys, "frozen", False):
             return
-        while not self._stop_updates.wait(60):
-            try:
-                release = self._publisher.check()
-                if release is not None:
-                    setup = self._publisher.download(release, self._stop_updates.is_set)
-                    while not self._stop_updates.is_set():
-                        with self._state_lock:
-                            self._analysis_contexts = {k:v for k,v in self._analysis_contexts.items()
-                                                       if time.monotonic()-v[0] <= ANALYSIS_TTL_SECONDS}
-                            idle = (not self._closing and not self._updating and not self._active
-                                    and not self._analysis_active and not self._analysis_contexts)
-                            if idle:
-                                self._updating = True
-                        if idle:
-                            try:
-                                self._js_call("appUpdate", "verifying", 100, "검증한 업데이트를 적용합니다")
-                                self._publisher.launch_helper(setup, release, sys.executable)
-                                self.exit_confirmed()
-                                return
-                            except Exception:
-                                with self._state_lock:
-                                    self._updating = False
-                                raise
-                        self._stop_updates.wait(3)
-            except Exception:
-                log.exception("publisher update rejected; keeping current version")
+        self._ui_ready.wait(timeout=15.0)
+        if self._stop_updates.wait(0.8):
+            return
+        while not self._stop_updates.is_set():
+            self._check_for_updates()
             if self._stop_updates.wait(publisher_update.CHECK_SECONDS):
                 return
 
-    def _kill_and_update(self) -> None:
-        # 독립 서명 manifest가 도입되기 전에는 과거 killswitch 상태를 지우고,
-        # unsigned version.json은 새 버전 알림으로만 사용한다.
+    def _check_for_updates(self) -> bool:
+        """시작 직후 및 주기적으로 새 버전을 확인해 업데이트 팝업·배너를 띄운다."""
         with self._state_lock:
             killed = self._cfg.get("killed") is True
+            updating = self._updating or self._closing
         if killed:
             self._update_settings(killed=False, killed_message="")
+        if updating:
+            return False
+
+        try:
+            release = self._publisher.check()
+            if release is not None:
+                release_url = (
+                    f"https://github.com/{GITHUB_RELEASE_REPO}"
+                    f"/releases/tag/v{release.version}"
+                )
+                with self._state_lock:
+                    self._pending_publisher_release = release
+                self._js_call("updateAvailable", release.version,
+                              release_url, "", False)
+                return True
+        except Exception:
+            log.exception("publisher update check failed; checking fallback notice")
 
         decision = self._updater.fetch_decision()
         if decision is None or decision.kind != "new_version":
-            return
+            return False
         with self._state_lock:
             self._pending_update = decision
         self._js_call("updateAvailable", decision.latest_version,
-                      decision.download_url or "", decision.release_notes, False)
+                      decision.download_url or "", "", False)
+        return True
+
+    def _kill_and_update(self) -> None:
+        self._check_for_updates()
 
     def _kill(self, msg: str) -> None:
         self._js_call("alert", str(msg)[:500])
+        self.exit_confirmed()
+
+    def _run_publisher_update(self,
+                              release: publisher_update.VerifiedRelease) -> None:
+        """Ed25519 전자서명 설치본 다운로드 → 재검증 → helper 기동 → 앱 종료."""
+        def say(stage: str, pct: float = 0.0, message: str = "") -> None:
+            self._js_call("appUpdate", stage, round(float(pct), 1), message)
+
+        say("downloading", 0, f"v{release.version} 설치 파일 준비 중")
+        last_emit = 0.0
+
+        def on_progress(done: int, total: int) -> None:
+            nonlocal last_emit
+            now = time.monotonic()
+            if done < total and now - last_emit < 0.12:
+                return
+            last_emit = now
+            pct = (done / total * 100.0) if total > 0 else 0.0
+            say("downloading", pct,
+                f"{done / 1048576:.1f} / {total / 1048576:.1f} MB")
+
+        try:
+            setup = self._publisher.download(
+                release, self._stop_updates.is_set, on_progress=on_progress)
+        except Exception as e:
+            log.exception("publisher update: download failed")
+            self._app_update_failed(f"다운로드에 실패했습니다 ({e})")
+            return
+
+        say("verifying", 100, "전자서명 및 무결성 확인 중")
+        try:
+            self._publisher.launch_helper(setup, release, sys.executable)
+        except Exception as e:
+            log.exception("publisher update: helper launch failed")
+            self._app_update_failed(f"설치를 시작하지 못했습니다 ({e})")
+            return
+
+        say("launching", 100, "설치를 시작합니다 — 완료 후 새 버전이 다시 열립니다")
+        time.sleep(0.2)
+        log.info("publisher update: exiting for helper")
         self.exit_confirmed()
 
     def _run_app_update(self, decision: UpdateDecision) -> None:

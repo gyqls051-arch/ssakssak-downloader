@@ -144,5 +144,35 @@ class TrustTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):handler.redirect_request(req,None,302,'redirect',{},url)
                 public.assert_not_called()
 
+    def test_check_for_updates_shows_popup_and_confirmed_update_runs_helper(self):
+        import main
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            data=b'MZ'+b'0'*(6000000-2)
+            body=dict(self.body,version='9.9.9',sha256=hashlib.sha256(data).hexdigest())
+            manifest=self.signed(body)
+            def fake_open(url):
+                if url.endswith('stable.json'): return io.BytesIO(manifest)
+                return io.BytesIO(data)
+            api=main.Api()
+            api._publisher=u.PublisherUpdater('1.11.0',root/'cache',fake_open,public_key=self.public)
+            calls=[]
+            api._js_call=lambda fn,*args:calls.append((fn,args))
+            self.assertTrue(api._check_for_updates())
+            self.assertIsNotNone(api._pending_publisher_release)
+            self.assertEqual(calls[0][0],'updateAvailable')
+            self.assertEqual(calls[0][1][0],'9.9.9')
+
+            launched=[]
+            exited=[]
+            with patch.object(api._publisher,'launch_helper',side_effect=lambda s,r,e:launched.append((Path(s),r.version))) as lh, \
+                 patch.object(api,'exit_confirmed',side_effect=lambda:exited.append(True)):
+                api._run_publisher_update(api._pending_publisher_release)
+            self.assertEqual(len(launched),1)
+            self.assertEqual(launched[0][1],'9.9.9')
+            self.assertEqual(exited,[True])
+            self.assertTrue(any(fn=='appUpdate' and args[0]=='downloading' for fn,args in calls))
+            api._shutdown()
+
 
 if __name__ == '__main__': unittest.main()

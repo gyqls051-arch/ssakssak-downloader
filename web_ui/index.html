@@ -260,6 +260,21 @@
   .updbar.busy .bar{display:block}
   .updbar .bar > i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
 
+  /* 업데이트 해야합니다 모달 */
+  .upd-ic{width:44px;height:44px;border-radius:12px;background:var(--accent-soft);
+          display:flex;align-items:center;justify-content:center;flex:none}
+  .upd-ver{display:inline-flex;align-items:center;padding:2px 8px;border-radius:99px;
+           background:var(--accent-soft);color:var(--accent);font-size:11.5px;font-weight:700}
+  .upd-prog{display:none;margin-top:14px;padding:11px 12px;border-radius:7px;
+            background:#FAFBFB;border:1px solid #ECEEEF}
+  .upd-prog.on{display:block}
+  .upd-pbar{height:6px;border-radius:3px;background:#E9E9ED;overflow:hidden}
+  .upd-pfill{height:100%;width:0;border-radius:3px;background:var(--accent);transition:width .2s}
+  .upd-ptxt{margin-top:7px;font-size:11.5px;font-weight:600;color:#5E5E62}
+  .upd-err{display:none;margin-top:12px;padding:10px 12px;border-radius:6px;
+           background:#FDF2F2;border:1px solid #F5C6C6;color:var(--danger);font-size:12px;line-height:1.45}
+  .upd-err.on{display:block}
+
   /* 토스트 */
   #toast{position:fixed;left:50%;bottom:42px;transform:translateX(-50%);z-index:90;
          max-width:80%;padding:10px 16px;border-radius:8px;background:rgba(27,27,29,.92);color:#fff;
@@ -431,8 +446,40 @@
   </div>
 </div>
 
+<!-- 업데이트 안내 모달 -->
+<div class="overlay" id="ovUpdate" style="z-index:65;background:rgba(20,20,22,.48)" onclick="if(event.target===this)closeUpdateModal()">
+  <div class="modal" style="width:420px">
+    <div style="padding:22px 22px 16px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div class="upd-ic">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" stroke="#fe780b" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div style="min-width:0;flex:1">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:16px;font-weight:800;color:var(--ink)">업데이트 해야합니다</span>
+            <span class="upd-ver" id="updModalVer"></span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">새 버전이 준비되었습니다</div>
+        </div>
+      </div>
+      <div id="updModalDesc" style="margin-top:14px;font-size:12.5px;color:#3A3F48;line-height:1.58">
+        최신 고화질 다운로드 지원과 오류 수정을 위해 새 버전으로 업데이트해 주세요. 설치가 끝나면 자동으로 다시 실행됩니다.
+      </div>
+      <div class="upd-prog" id="updModalProg">
+        <div class="upd-pbar"><div class="upd-pfill" id="updModalFill"></div></div>
+        <div class="upd-ptxt" id="updModalStatus">새 버전 준비 중…</div>
+      </div>
+      <div class="upd-err" id="updModalErr"></div>
+    </div>
+    <div class="mfoot" style="background:#FAFBFB">
+      <button class="btn-cancel" id="updModalLater" onclick="closeUpdateModal()">나중에</button>
+      <button class="btn-primary" id="updModalGo" style="height:36px;padding:0 18px" onclick="startAppUpdate()">지금 업데이트</button>
+    </div>
+  </div>
+</div>
+
 <!-- 약관 모달 -->
-<div class="overlay" id="ovTos" style="background:rgba(20,20,22,.5)">
+<div class="overlay" id="ovTos" style="z-index:70;background:rgba(20,20,22,.5)">
   <div class="modal" style="width:484px">
     <div style="padding:18px 20px 14px;border-bottom:1px solid #EEF0F2">
       <div style="font-size:14.5px;font-weight:700;color:var(--ink)">이용약관 및 면책 고지</div>
@@ -959,14 +1006,20 @@ function ffmpegStatus(text, ok){
   else S.ffmpegMsg = text;
   renderStatus();
 }
-/* ── 자동 업데이트 배너 ──────────────────────────────────────
-   updateAvailable() 로 뜨고, '지금 업데이트' 를 누르면 Python 이 설치본을
-   직접 받아 조용히 재설치한다. 진행 상황은 appUpdate() 로 되돌아온다.
-   자동이 실패하면 릴리스 페이지로 받는 길(updUrl)을 남겨둔다. */
+/* ── 자동 업데이트 팝업 & 배너 ──────────────────────────────────
+   updateAvailable() 로 '업데이트 해야합니다' 모달과 상단 배너가 함께 준비되고,
+   '지금 업데이트' 를 누르면 Python 이 서명 검증된 설치본을 받아 재설치한다.
+   진행 상황은 appUpdate() 로 되돌아오며, 실패 시 브라우저 다운로드 폴백을 남긴다. */
 let updUrl = '';        // 브라우저 폴백용 릴리스 페이지 주소
+let updBusy = false;    // 다운로드·설치 진행 중 여부
+function closeUpdateModal(){
+  if(updBusy) return;
+  $('ovUpdate').classList.remove('on');
+}
 function updateAvailable(ver, url, notes, forced){   // Python → JS (업데이트 체크 결과)
   updUrl = url || '';
-  $('updText').textContent = `🆕 새 버전 v${ver} 이 나왔습니다` + (notes ? ` — ${notes}` : '');
+  updBusy = false;
+  $('updText').textContent = `업데이트 해야합니다 (v${ver})` + (notes ? ` — ${notes}` : '');
   $('updText').title = notes || '';
   $('updGo').disabled = false;
   $('updGo').textContent = '지금 업데이트';
@@ -975,14 +1028,38 @@ function updateAvailable(ver, url, notes, forced){   // Python → JS (업데이
   $('updClose').style.display = '';
   $('updBar').classList.remove('busy');
   $('updBar').classList.add('on');
+
+  $('updModalVer').textContent = ver ? `v${ver}` : '';
+  $('updModalDesc').textContent = notes
+    ? `새 버전이 출시되었습니다. ${notes}`
+    : '최신 고화질 다운로드 지원과 오류 수정을 위해 새 버전으로 업데이트해 주세요. 설치가 끝나면 자동으로 다시 실행됩니다.';
+  $('updModalProg').classList.remove('on');
+  $('updModalErr').classList.remove('on');
+  $('updModalErr').textContent = '';
+  $('updModalFill').style.width = '0%';
+  $('updModalLater').disabled = false;
+  $('updModalGo').disabled = false;
+  $('updModalGo').textContent = '지금 업데이트';
+  $('updModalGo').onclick = startAppUpdate;
+  $('ovUpdate').classList.add('on');
 }
 
 async function startAppUpdate(){
+  updBusy = true;
   $('updGo').disabled = true;
   $('updGo').textContent = '업데이트 중';
   $('updFill').style.width = '0%';
   $('updBar').classList.add('busy');
-  $('updText').textContent = '🔄 새 버전 준비 중…';
+  $('updText').textContent = '새 버전 준비 중…';
+
+  $('updModalErr').classList.remove('on');
+  $('updModalProg').classList.add('on');
+  $('updModalFill').style.width = '0%';
+  $('updModalStatus').textContent = '새 버전 준비 중…';
+  $('updModalLater').disabled = true;
+  $('updModalGo').disabled = true;
+  $('updModalGo').textContent = '업데이트 중…';
+
   const r = await api().start_app_update();
   if(r && r.ok === false) appUpdate('error', 0, r.error || '업데이트를 시작하지 못했습니다');
 }
@@ -995,25 +1072,47 @@ const UPD_LABEL = {
 };
 function appUpdate(stage, pct, message){     // Python → JS (자동 업데이트 진행 상황)
   if(stage === 'error'){
+    updBusy = false;
     $('updBar').classList.remove('busy');
-    $('updText').textContent = `⚠ 자동 업데이트 실패 — ${message}`;
+    $('updText').textContent = `자동 업데이트 실패 — ${message}`;
     $('updText').title = message || '';
     $('updGo').disabled = !updUrl;
     $('updGo').textContent = '브라우저로 받기';
     $('updGo').onclick = () => { if(updUrl) api().open_url(updUrl); };
+
+    $('updModalProg').classList.remove('on');
+    $('updModalErr').textContent = message || '자동 업데이트에 실패했습니다.';
+    $('updModalErr').classList.add('on');
+    $('updModalLater').disabled = false;
+    if(updUrl){
+      $('updModalGo').disabled = false;
+      $('updModalGo').textContent = '브라우저로 받기';
+      $('updModalGo').onclick = () => { api().open_url(updUrl); };
+    } else {
+      $('updModalGo').disabled = false;
+      $('updModalGo').textContent = '다시 시도';
+      $('updModalGo').onclick = startAppUpdate;
+    }
     return;
   }
-  $('updBar').classList.add('busy');
-  $('updFill').style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
+  const clamped = Math.max(0, Math.min(100, pct || 0));
   const label = UPD_LABEL[stage] || '준비 중';
-  $('updText').textContent = `🔄 ${label}${message ? ` · ${message}` : ''}`;
+  const statusLine = `${label}${message ? ` · ${message}` : ''}`;
+  $('updBar').classList.add('busy');
+  $('updFill').style.width = clamped + '%';
+  $('updText').textContent = statusLine;
+
+  $('updModalProg').classList.add('on');
+  $('updModalFill').style.width = clamped + '%';
+  $('updModalStatus').textContent = statusLine;
 }
 
-/* ── 키보드: ESC 로 분석/설정 모달 닫기 ── */
+/* ── 키보드: ESC 로 분석/설정/업데이트 모달 닫기 ── */
 document.addEventListener('keydown', e => {
   if(e.key !== 'Escape') return;
   if($('ovPaste').classList.contains('on')) closePaste();
   else if($('ovSettings').classList.contains('on')) closeSettings();
+  else if($('ovUpdate').classList.contains('on')) closeUpdateModal();
   else if($('ovExit').classList.contains('on')) $('ovExit').classList.remove('on');
 });
 

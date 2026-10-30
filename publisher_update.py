@@ -142,7 +142,7 @@ class PublisherUpdater:
         atomic_json(self.root/'state.json', state)
         return release
 
-    def download(self, release, cancelled=lambda: False):
+    def download(self, release, cancelled=lambda: False, on_progress=None):
         self.root.mkdir(parents=True, exist_ok=True)
         self.prune_cache()
         directory = Path(tempfile.mkdtemp(prefix='verified-', dir=self.root))
@@ -158,6 +158,8 @@ class PublisherUpdater:
                     total += len(chunk)
                     if total > release.size: raise ValueError('Oversized update')
                     output.write(chunk)
+                    if on_progress is not None:
+                        on_progress(total, release.size)
                 output.flush(); os.fsync(output.fileno())
             verify_file(target, release)
             atomic_json(directory/'manifest.json',json.loads(release.raw))
