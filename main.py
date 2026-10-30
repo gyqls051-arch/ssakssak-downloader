@@ -140,7 +140,7 @@ import publisher_update
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.11.2"
+APP_VERSION = "1.11.3"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -2584,7 +2584,7 @@ class FfmpegInstaller:
                 tmp_exe, asset.executable_sha256, asset.executable_size)
             if not self._smoke_test(tmp_exe):
                 raise RuntimeError("ffmpeg 실행 확인에 실패했습니다")
-            os.replace(tmp_exe, target)
+            self._replace_with_retry(tmp_exe, target)
             tmp_exe = None
         except Exception as e:
             log.exception("ffmpeg install failed")
@@ -2767,6 +2767,22 @@ class FfmpegInstaller:
             return result.returncode == 0 and "ffmpeg version" in output
         except (OSError, subprocess.SubprocessError):
             return False
+
+    @staticmethod
+    def _replace_with_retry(src: Path, dst: Path,
+                            attempts: int = 24, delay: float = 0.25) -> None:
+        """_smoke_test 직후 Windows Defender 스캔이 잠시 핸들을 붙드는 경우 재시도."""
+        last_err: OSError | None = None
+        for i in range(max(1, attempts)):
+            try:
+                os.replace(src, dst)
+                return
+            except PermissionError as exc:
+                last_err = exc
+                if i + 1 < attempts:
+                    time.sleep(delay)
+        assert last_err is not None
+        raise last_err
 
     @staticmethod
     def _cleanup(path: Path) -> None:

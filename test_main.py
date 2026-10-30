@@ -319,6 +319,26 @@ def test_verify_zip_rejects_wrong_structure(tmp_path, monkeypatch):
         FfmpegInstaller._verify_zip(bad)
 
 
+def test_ffmpeg_replace_with_retry_handles_transient_av_lock(tmp_path, monkeypatch):
+    src = tmp_path / "ffmpeg.part.exe"
+    dst = tmp_path / "ffmpeg.exe"
+    src.write_bytes(b"MZok")
+    real_replace = main.os.replace
+    attempts = 0
+
+    def flaky_replace(a, b):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(32, "being used by another process")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(main.os, "replace", flaky_replace)
+    FfmpegInstaller._replace_with_retry(src, dst, attempts=5, delay=0.0)
+    assert attempts == 3
+    assert dst.read_bytes() == b"MZok"
+
+
 def test_ffmpeg_static_pins_resolve_without_api(monkeypatch):
     tag = "autobuild-2026-08-30-12-34"
     name = "ffmpeg-pinned-win64-gpl.zip"

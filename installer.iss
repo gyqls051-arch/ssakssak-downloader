@@ -113,7 +113,9 @@ begin
   AppDir := ExpandConstant('{app}');
   if FileExists(AppDir + '\{#MyAppExeName}') or FileExists(AppDir + '\potprovider\node.exe') then
   begin
-    PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+    PsExe := ExpandConstant('{win}\Sysnative\WindowsPowerShell\v1.0\powershell.exe');
+    if (not IsWin64) or (not FileExists(PsExe)) then
+      PsExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
     if FileExists(PsExe) then
     begin
       EscapedDir := AppDir;
