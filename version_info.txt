@@ -3,8 +3,8 @@
 # build.bat 의 --version-file 옵션으로 exe 에 포함됨.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 11, 4, 0),
-    prodvers=(1, 11, 4, 0),
+    filevers=(1, 11, 5, 0),
+    prodvers=(1, 11, 5, 0),
     mask=0x3F,
     flags=0x0,
     OS=0x40004,
@@ -19,11 +19,11 @@ VSVersionInfo(
           '041204B0',
           [StringStruct('CompanyName', '싹싹김치'),
            StringStruct('FileDescription', '싹싹김치 다운로더'),
-           StringStruct('FileVersion', '1.11.4.0'),
+           StringStruct('FileVersion', '1.11.5.0'),
            StringStruct('InternalName', 'SsakSsakKimchiDownloader'),
            StringStruct('OriginalFilename', 'SsakSsakKimchiDownloader.exe'),
            StringStruct('ProductName', '싹싹김치 다운로더'),
-           StringStruct('ProductVersion', '1.11.4.0')])
+           StringStruct('ProductVersion', '1.11.5.0')])
       ]),
     VarFileInfo([VarStruct('Translation', [1042, 1200])])
   ]

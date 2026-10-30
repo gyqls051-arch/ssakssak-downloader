@@ -1043,3 +1043,98 @@ def test_start_download_queues_beyond_max_active_and_drains(monkeypatch, tmp_pat
                 break
         main.time.sleep(0.02)
     assert len(ran) == 5
+
+
+# -------- v1.11.5: ?? WAF ?? ?? / ?? ?? ??? ?? --------
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://www.tiktok.com/@scout2015/video/6718335390845095173", True),
+    ("https://vt.tiktok.com/ZSNabc123/", True),
+    ("https://vm.tiktok.com/ZSNabc123/", True),
+    ("https://v.douyin.com/iYabc/", True),
+    ("https://www.youtube.com/watch?v=jNQXAC9IVRw", False),
+    ("https://not-tiktok.com/@u/video/1", False),
+    ("https://tiktok.com.evil.example/v", False),
+])
+def test_is_tiktok_recognizes_web_and_short_domains(url, expected):
+    assert main.is_tiktok(url) is expected
+
+
+def test_build_format_selector_tiktok_avoids_bgm_only_mux():
+    tt_url = "https://www.tiktok.com/@u/video/123"
+    assert build_format_selector("mp4", tt_url) == "best[ext=mp4]/best"
+    assert build_format_selector("mkv", "https://vt.tiktok.com/abc/") == "best"
+    assert "[format_id!=audio]" in build_format_selector("mp4")
+
+    tiktok_formats = [
+        {"format_id": "audio", "url": "https://cdn.example/bgm.mp3", "ext": "mp3",
+         "vcodec": "none", "acodec": "mp3", "abr": 128},
+        {"format_id": "video_only_broken", "url": "https://cdn.example/v_only.mp4", "ext": "mp4",
+         "width": 1080, "height": 1920, "vcodec": "hvc1", "acodec": "none", "tbr": 2600},
+        {"format_id": "h264_540p", "url": "https://cdn.example/540.mp4", "ext": "mp4",
+         "width": 576, "height": 1024, "vcodec": "h264", "acodec": "aac", "tbr": 900},
+        {"format_id": "bytevc1_1080p", "url": "https://cdn.example/1080.mp4", "ext": "mp4",
+         "width": 1080, "height": 1920, "vcodec": "hvc1", "acodec": "aac", "tbr": 2200},
+    ]
+    with main.yt_dlp.YoutubeDL({
+        "format": build_format_selector("mp4", tt_url),
+        "format_sort": build_format_sort(None, "mp4"),
+        "quiet": True,
+    }) as ydl:
+        res = ydl.process_ie_result({
+            "id": "tt1", "title": "tt1", "extractor": "TikTok", "extractor_key": "TikTok",
+            "formats": tiktok_formats,
+        }, download=False)
+    assert "requested_formats" not in res
+    assert res["format_id"] == "bytevc1_1080p"
+
+
+def test_video_analyzer_probe_tiktok_headers_and_browser_fallback(monkeypatch):
+    import contextlib as _cl
+
+    monkeypatch.setattr(main, "validate_public_http_url", lambda url, **kw: url)
+    monkeypatch.setattr(main.VideoAnalyzer, "_thumb", classmethod(lambda cls, info: ""))
+
+    seen_opts: list[dict] = []
+    mode = {"fail_first": False, "error_msg": "Unexpected response from webpage request"}
+
+    class _StubYDL:
+        def __init__(self, opts):
+            seen_opts.append(dict(opts))
+        def extract_info(self, url, download=False):
+            if mode["fail_first"] and len(seen_opts) == 1:
+                raise RuntimeError(mode["error_msg"])
+            return {
+                "title": "clip",
+                "uploader": "creator",
+                "duration": 15,
+                "formats": [{"height": 1280, "width": 720, "vcodec": "h264", "ext": "mp4"}],
+            }
+
+    @_cl.contextmanager
+    def fake_guarded(opts):
+        yield _StubYDL(opts)
+
+    monkeypatch.setattr(main, "_guarded_youtube_dl", fake_guarded)
+
+    # 1) ?? URL? ? ???? ???? ???? ??? ?? ???.
+    r1 = main.VideoAnalyzer().probe("https://www.tiktok.com/@u/video/1")
+    assert r1.heights == [720]
+    assert len(seen_opts) == 1
+    assert seen_opts[0]["http_headers"]["User-Agent"] == main.BROWSER_UA
+
+    # 2) ?? ?-??? ???? ?? UA?? ??? ???? ??? 1? ?????.
+    seen_opts.clear()
+    mode["fail_first"] = True
+    r2 = main.VideoAnalyzer().probe("https://www.instagram.com/reel/abc/")
+    assert r2.heights == [720]
+    assert len(seen_opts) == 2
+    assert "http_headers" not in seen_opts[0]
+    assert seen_opts[1]["http_headers"]["User-Agent"] == main.BROWSER_UA
+
+    # 3) ??? ?? ??? ????? ?? ??? ?? ?? ??? ???? ??.
+    seen_opts.clear()
+    mode["error_msg"] = "Sign in to confirm your age"
+    with pytest.raises(RuntimeError, match="Sign in"):
+        main.VideoAnalyzer().probe("https://www.instagram.com/reel/private/")
+    assert len(seen_opts) == 1

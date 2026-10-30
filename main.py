@@ -142,7 +142,7 @@ import publisher_update
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.11.4"
+APP_VERSION = "1.11.5"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -238,7 +238,7 @@ MEDIA_EXTENSIONS = frozenset({
 # 실패하면 흔한 데스크톱 브라우저 UA + Referer/Origin 헤더로 한 번 더 시도한다.
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 # 멈춘 연결에 무한 대기하지 않게 하는 네트워크 타임아웃(초).
@@ -367,8 +367,8 @@ log = logging.getLogger("ssakssak")
 #  순수 유틸
 # ============================================================
 
-def build_format_selector(container: str) -> str:
-    """컨테이너에 맞춘 yt-dlp 포맷 셀렉터.
+def build_format_selector(container: str, url: str = "") -> str:
+    """컨테이너·사이트에 맞춘 yt-dlp 포맷 셀렉터.
 
     해상도는 셀렉터에서 하드 필터링하지 않는다 — 'height<=N' 필터는 세로 영상
     (Shorts 1080×1920)을 480p로 떨어뜨렸고, 'vcodec^=avc1' 하드 필터는 4K(VP9/AV1)
@@ -376,11 +376,16 @@ def build_format_selector(container: str) -> str:
     문제가 있었다. 해상도 최우선 랭킹과 동일 해상도 내 H.264+AAC 선호는
     build_format_sort() 가 맡고, MP4 셀렉터는 무손실 병합이 잘 되는 AAC 오디오만
     우선 결합한다."""
+    if url and is_tiktok(url):
+        # 틱톡은 정상 영상+음성 스트림이 모두 단일 MP4(bytevc1/h264)이며,
+        # 분리된 format_id='audio'(배경음악 단독)나 깨진 비디오 전용 트랙을 합치면
+        # 원본 음성이 유실되거나 404가 난다.
+        return "best[ext=mp4]/best" if container == "mp4" else "best"
     if container == "mp4":
         return (
-            "bestvideo+bestaudio[acodec^=mp4a]/"
-            "bestvideo+bestaudio[ext=m4a]/"
-            "bestvideo+bestaudio/"
+            "bestvideo+bestaudio[acodec^=mp4a][format_id!=audio]/"
+            "bestvideo+bestaudio[ext=m4a][format_id!=audio]/"
+            "bestvideo+bestaudio[format_id!=audio]/"
             "best[ext=mp4]/best"
         )
     return "bestvideo+bestaudio/best"
@@ -855,6 +860,27 @@ def is_youtube(url: str) -> bool:
     return (host in ("youtu.be", "youtube.com", "m.youtube.com")
             or host.endswith(".youtube.com")
             or host.endswith(".youtube-nocookie.com"))
+
+
+def is_tiktok(url: str) -> bool:
+    """틱톡·도우인(모바일 공유 단축 도메인 포함) URL 인지."""
+    try:
+        host = urllib.parse.urlparse(url).netloc.lower()
+    except ValueError:
+        return False
+    host = host.split("@")[-1].split(":")[0]
+    return (host in ("tiktok.com", "tiktokv.com", "douyin.com")
+            or host.endswith(".tiktok.com")
+            or host.endswith(".tiktokv.com")
+            or host.endswith(".douyin.com"))
+
+
+def tiktok_browser_headers() -> dict[str, str]:
+    """틱톡 SlardarWAF 차단을 피하기 위한 데스크톱 브라우저 헤더."""
+    return {
+        "User-Agent": BROWSER_UA,
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
 
 
 def potprovider_dir() -> Path | None:
@@ -1359,11 +1385,21 @@ class VideoAnalyzer:
         if is_youtube(url):
             POT.ensure_running()
             opts["extractor_args"] = youtube_extractor_args()
+        elif is_tiktok(url):
+            opts["http_headers"] = tiktok_browser_headers()
         if cookies_browser:
             # (browser, profile, keyring, container) 4-튜플이어야 한다.
             opts["cookiesfrombrowser"] = (cookies_browser, None, None, None)
-        with _guarded_youtube_dl(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        try:
+            with _guarded_youtube_dl(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as first_exc:
+            if (is_youtube(url) or "http_headers" in opts
+                    or looks_like_login_error(str(first_exc))):
+                raise
+            retry_opts = {**opts, "http_headers": Downloader._headers_for(url)}
+            with _guarded_youtube_dl(retry_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
 
         if info.get("_type") == "playlist":
             entries = info.get("entries") or []
@@ -2080,6 +2116,8 @@ class Downloader:
             if not POT.ensure_running():
                 log.warning("POT server unavailable — 유튜브 다운로드가 실패할 수 있음")
             opts["extractor_args"] = youtube_extractor_args()
+        elif is_tiktok(cfg.url):
+            opts["http_headers"] = tiktok_browser_headers()
         self._configure_output(cfg, opts)
         return opts
 
@@ -2091,7 +2129,10 @@ class Downloader:
             origin = f"{p.scheme}://{p.netloc}" if p.scheme and p.netloc else ""
         except ValueError:
             origin = ""
-        h = {"User-Agent": BROWSER_UA}
+        h = {
+            "User-Agent": BROWSER_UA,
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
         if origin:
             h["Referer"] = origin + "/"
             h["Origin"] = origin
@@ -3555,7 +3596,7 @@ class Api:
 
         height = dict(QUALITY_TABLE).get(quality)
         container = dict(FORMAT_TABLE).get(fmt, "mp4")
-        fmt_str = "bestaudio/best" if is_audio else build_format_selector(container)
+        fmt_str = "bestaudio/best" if is_audio else build_format_selector(container, url)
         expected_height = None
         if not is_audio:
             expected_height = (
