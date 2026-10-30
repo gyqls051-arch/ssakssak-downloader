@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import base64
+from collections import deque
 import contextlib
 import functools
 import hashlib
@@ -140,7 +142,7 @@ import publisher_update
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.11.3"
+APP_VERSION = "1.11.4"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -1408,9 +1410,72 @@ class VideoAnalyzer:
         }
         return sorted(hs)
 
+    THUMB_MAX_BYTES = 1_500_000
+    THUMB_TIMEOUT = 6.0
+
+    @classmethod
+    def _thumb_candidates(cls, info: dict) -> list[str]:
+        """화면에 적당한 크기(240~960px) HTTPS 썸네일 후보를 우선 정렬한다."""
+        preferred: list[tuple[int, str]] = []
+        fallback: list[str] = []
+        raw_list = info.get("thumbnails")
+        if isinstance(raw_list, list):
+            for item in raw_list:
+                if not isinstance(item, dict):
+                    continue
+                url = item.get("url")
+                if not isinstance(url, str) or not url.lower().startswith("https://"):
+                    continue
+                w = item.get("width")
+                if isinstance(w, int) and 240 <= w <= 960:
+                    preferred.append((abs(w - 480), url))
+                else:
+                    fallback.append(url)
+        preferred.sort(key=lambda pair: pair[0])
+        ordered: list[str] = [u for _, u in preferred]
+        direct = info.get("thumbnail")
+        if isinstance(direct, str) and direct.lower().startswith("https://"):
+            ordered.append(direct)
+        ordered.extend(reversed(fallback))
+        seen: set[str] = set()
+        unique: list[str] = []
+        for u in ordered:
+            if u not in seen:
+                seen.add(u)
+                unique.append(u)
+        return unique[:3]
+
     @staticmethod
-    def _thumb(info: dict) -> str:
-        """WebView가 backend pinning 밖에서 원격 이미지를 읽지 않도록 비활성화."""
+    def _detect_image_mime(raw: bytes) -> str:
+        if raw.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            return "image/webp"
+        return ""
+
+    @classmethod
+    def _thumb(cls, info: dict) -> str:
+        """WebView 외부 직접 요청 대신 backend pinned HTTPS로 받아 data URI로 반환."""
+        for candidate in cls._thumb_candidates(info):
+            try:
+                safe_url = validate_public_http_url(candidate, require_https=True)
+                req = urllib.request.Request(safe_url, headers={
+                    "User-Agent": BROWSER_UA,
+                    "Accept": "image/jpeg,image/png,image/webp,image/*;q=0.8",
+                })
+                with _open_public_url(req, timeout=cls.THUMB_TIMEOUT) as resp:
+                    raw = resp.read(cls.THUMB_MAX_BYTES + 1)
+                if not (0 < len(raw) <= cls.THUMB_MAX_BYTES):
+                    continue
+                mime = cls._detect_image_mime(raw)
+                if not mime:
+                    continue
+                encoded = base64.b64encode(raw).decode("ascii")
+                return f"data:{mime};base64,{encoded}"
+            except (urllib.error.URLError, OSError, ValueError, RuntimeError):
+                continue
         return ""
 
 
@@ -1793,6 +1858,121 @@ class Downloader:
         log.error("안전한 다운로드 작업 폴더를 만들지 못했습니다")
         return None
 
+    @staticmethod
+    def _inspect_mp4_streams(ffmpeg_exe: Path,
+                             media: Path) -> tuple[str, str, str, bool]:
+        """ffmpeg -i 출력에서 주 비디오·오디오 코덱과 timescale 경고를 추출한다."""
+        try:
+            res = subprocess.run(
+                [str(ffmpeg_exe), "-hide_banner", "-i", str(media)],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=20, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            stderr = res.stderr or ""
+        except (OSError, subprocess.SubprocessError):
+            return "", "", "", False
+
+        vcodec = ""
+        acodec = ""
+        audio_line = ""
+        for line in stderr.splitlines():
+            if "Stream #" not in line:
+                continue
+            if ": Video:" in line and "(attached pic)" not in line and not vcodec:
+                m = re.search(r":\s*Video:\s*([A-Za-z0-9_]+)", line)
+                if m:
+                    vcodec = m.group(1).lower()
+            elif ": Audio:" in line and not acodec:
+                m = re.search(r":\s*Audio:\s*([A-Za-z0-9_]+)", line)
+                if m:
+                    acodec = m.group(1).lower()
+                    audio_line = line
+        has_ts_warn = "timescale not set" in stderr.lower()
+        return vcodec, acodec, audio_line, has_ts_warn
+
+    def _ensure_mp4_compatible(self, cfg: DownloadConfig) -> None:
+        """MP4(호환성 우선)에서 비-H.264(VP9/AV1/HEVC)나 깨진 트랙을 표준 H.264+AAC로 맞춘다."""
+        if cfg.is_audio_only or cfg.container != "mp4" or not cfg.ffmpeg_dir or not self._tmpdir:
+            return
+        ffmpeg_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+        ffmpeg_exe = Path(cfg.ffmpeg_dir) / ffmpeg_name
+        if not ffmpeg_exe.is_file():
+            return
+        work_root = Path(self._tmpdir).resolve(strict=True)
+        candidates = sorted(
+            p for p in Path(self._tmpdir).iterdir()
+            if p.is_file()
+            and not p.is_symlink()
+            and p.resolve(strict=True).parent == work_root
+            and p.suffix.lower() == ".mp4"
+            and not p.name.lower().endswith((".part", ".ytdl"))
+            and not p.stem.lower().endswith(".temp")
+            and ".part-" not in p.name.lower()
+        )
+        for media in candidates:
+            self._raise_if_cancelled()
+            vcodec, acodec, audio_line, has_ts_warn = self._inspect_mp4_streams(
+                ffmpeg_exe, media)
+            if not vcodec:
+                continue
+            need_video = vcodec != "h264"
+            need_audio = bool(acodec and (acodec != "aac" or "he-aac" in audio_line.lower()))
+            if not need_video and not need_audio and not has_ts_warn:
+                continue
+            if need_video or need_audio:
+                self._on_status("호환 MP4(H.264) 변환 중…")
+            tmp_conv = media.with_name(f"{media.stem}.h264conv.temp.mp4")
+            cmd = [
+                str(ffmpeg_exe), "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(media),
+                "-map", "0:v:0", "-map", "0:a:0?", "-map_metadata", "0",
+            ]
+            if need_video:
+                cmd += [
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                    "-pix_fmt", "yuv420p",
+                    "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                ]
+            else:
+                cmd += ["-c:v", "copy"]
+            if acodec:
+                if need_audio or need_video:
+                    cmd += ["-c:a", "aac", "-b:a", "192k"]
+                else:
+                    cmd += ["-c:a", "copy"]
+            cmd += ["-movflags", "+faststart", str(tmp_conv)]
+            proc: subprocess.Popen | None = None
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                while proc.poll() is None:
+                    if self._cancel_event.is_set():
+                        with contextlib.suppress(Exception):
+                            proc.terminate()
+                            proc.wait(timeout=2)
+                        with contextlib.suppress(Exception):
+                            proc.kill()
+                        raise yt_dlp.utils.DownloadCancelled()
+                    time.sleep(0.2)
+                if (proc.returncode == 0 and tmp_conv.is_file()
+                        and tmp_conv.stat().st_size > 0):
+                    FfmpegInstaller._replace_with_retry(tmp_conv, media)
+                else:
+                    err_bytes = proc.stderr.read() if proc.stderr else b""
+                    log.warning("mp4 compatibility conversion skipped (code=%s): %s",
+                                proc.returncode,
+                                err_bytes.decode("utf-8", "replace")[:200])
+            finally:
+                if proc is not None and proc.stderr is not None:
+                    with contextlib.suppress(Exception):
+                        proc.stderr.close()
+                with contextlib.suppress(OSError):
+                    tmp_conv.unlink(missing_ok=True)
+
     def _run_inner(self, cfg: DownloadConfig) -> None:
         """run() 본체. 임시 폴더 정리는 run() 이 책임진다."""
         base = self._base_opts(cfg)
@@ -1813,6 +1993,7 @@ class Downloader:
                 log.info("download attempt %d: %s", i + 1, label)
                 with _guarded_youtube_dl({**base, **extra}) as ydl:
                     ydl.download([cfg.url])
+                self._ensure_mp4_compatible(cfg)
                 self._harvest(cfg.out_dir)
                 self._on_done(True, None)
                 return
@@ -1847,6 +2028,7 @@ class Downloader:
         if not self._cancel_event.is_set():
             try:
                 if self._try_stage2(cfg, base):
+                    self._ensure_mp4_compatible(cfg)
                     self._harvest(cfg.out_dir)
                     self._on_done(True, None)
                     return
@@ -2910,6 +3092,45 @@ def _publisher_open(url: str):
     return response
 
 
+def _reveal_in_explorer(path: Path) -> bool:
+    """Windows 탐색기를 열어 지정한 파일을 선택 상태로 표시한다."""
+    if sys.platform != "win32":
+        return False
+    try:
+        ole32 = ctypes.windll.ole32
+        shell32 = ctypes.windll.shell32
+        ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+        ole32.CoInitialize.restype = ctypes.c_long
+        ole32.CoUninitialize.argtypes = []
+        ole32.CoUninitialize.restype = None
+        shell32.ILCreateFromPathW.argtypes = [ctypes.c_wchar_p]
+        shell32.ILCreateFromPathW.restype = ctypes.c_void_p
+        shell32.SHOpenFolderAndSelectItems.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_ulong,
+        ]
+        shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+        shell32.ILFree.argtypes = [ctypes.c_void_p]
+        shell32.ILFree.restype = None
+
+        hr_co = int(ole32.CoInitialize(None))
+        need_uninit = hr_co in (0, 1)
+        try:
+            pidl = shell32.ILCreateFromPathW(os.path.normpath(str(path)))
+            if not pidl:
+                return False
+            try:
+                hr = shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0)
+                return int(hr) >= 0
+            finally:
+                shell32.ILFree(pidl)
+        finally:
+            if need_uninit:
+                with contextlib.suppress(Exception):
+                    ole32.CoUninitialize()
+    except Exception:
+        return False
+
+
 class Api:
     """JS(window.pywebview.api)에서 호출하는 백엔드. 모든 사이드이펙트는 여기 격리."""
 
@@ -2939,6 +3160,7 @@ class Api:
         self._files: dict[str, str] = {}              # job_id → 최종 파일 경로
         self._job_roots: dict[str, str] = {}          # job_id → 해당 작업 저장 root
         self._active: dict[str, Downloader] = {}      # 동시 진행 중 (job_id → Downloader)
+        self._queued: deque[tuple[str, Downloader, DownloadConfig, str]] = deque()
         self._workers: dict[str, threading.Thread] = {}
         self._background_threads: set[threading.Thread] = set()
         self._state_lock = threading.RLock()
@@ -3032,6 +3254,42 @@ class Api:
                 raise
         return True
 
+    def _launch_worker_locked(self, job_id: str, dl: Downloader,
+                              cfg: DownloadConfig, root_str: str) -> None:
+        """_state_lock 보유 상태에서 다운로드 워커 스레드를 시작한다."""
+        worker = threading.Thread(
+            target=self._run_download_worker, args=(job_id, dl, cfg),
+            name=f"download-{job_id}", daemon=True)
+        self._active[job_id] = dl
+        self._workers[job_id] = worker
+        self._job_roots[job_id] = root_str
+        try:
+            worker.start()
+        except RuntimeError:
+            self._active.pop(job_id, None)
+            self._workers.pop(job_id, None)
+            self._job_roots.pop(job_id, None)
+            raise
+
+    def _drain_queue_locked(self) -> None:
+        """_state_lock 보유 상태에서 빈 슬롯만큼 대기열 작업을 시작한다."""
+        while (not self._closing and not self._updating
+               and len(self._active) < MAX_ACTIVE_DOWNLOADS and self._queued):
+            next_id, next_dl, next_cfg, next_root = self._queued.popleft()
+            if next_dl._cancel_event.is_set():
+                if next_id not in self._files:
+                    self._job_roots.pop(next_id, None)
+                continue
+            try:
+                self._launch_worker_locked(next_id, next_dl, next_cfg, next_root)
+                log.info("queued download start id=%s url=%s (active=%d, queued=%d)",
+                         next_id, safe_url_for_log(next_cfg.url),
+                         len(self._active), len(self._queued))
+            except RuntimeError as e:
+                log.exception("queued download worker start failed")
+                self._js_call("dlError", next_id,
+                              f"다운로드 작업을 시작하지 못했습니다: {e}")
+
     def _run_download_worker(self, job_id: str, dl: Downloader,
                              cfg: DownloadConfig) -> None:
         try:
@@ -3042,7 +3300,8 @@ class Api:
                 self._workers.pop(job_id, None)
                 if job_id not in self._files:
                     self._job_roots.pop(job_id, None)
-                no_active = not self._active
+                self._drain_queue_locked()
+                no_active = not self._active and not self._queued
             if no_active:
                 self._js("setBusy(false)")
 
@@ -3077,6 +3336,11 @@ class Api:
                 self._stop_updates.set()
                 self._ui_ready.set()
                 already_closing = False
+                queued = list(self._queued)
+                self._queued.clear()
+                for qid, _qdl, _qcfg, _qroot in queued:
+                    if qid not in self._files:
+                        self._job_roots.pop(qid, None)
                 active = list(self._active.items())
                 workers = dict(self._workers)
                 background = list(self._background_threads)
@@ -3084,6 +3348,8 @@ class Api:
             self._shutdown_complete.wait(timeout=max(0.0, timeout))
             return
 
+        for _qid, qdl, _qcfg, _qroot in queued:
+            qdl.cancel()
         for _, dl in active:
             # 종료 중에는 부분/완성 산출물을 지우지 않아 재실행 전 수동 복구가 가능하다.
             dl._preserve_tmpdir = True
@@ -3262,11 +3528,11 @@ class Api:
         with self._state_lock:
             if self._closing or self._updating:
                 return {"ok": False, "error": "앱을 종료하는 중입니다"}
-            if job_id in self._active or job_id in self._files:
+            if (job_id in self._active or job_id in self._files
+                    or any(q[0] == job_id for q in self._queued)):
                 return {"ok": False, "error": "이미 사용 중인 작업 식별자입니다"}
-            if len(self._active) >= MAX_ACTIVE_DOWNLOADS:
-                return {"ok": False,
-                        "error": f"동시에 최대 {MAX_ACTIVE_DOWNLOADS}개까지 받을 수 있습니다"}
+            if len(self._queued) >= 200:
+                return {"ok": False, "error": "대기 중인 작업이 너무 많습니다"}
             ffmpeg_dir = self._ffmpeg_dir
             save_value = self._cfg.get("save_dir", self._default_dir())
         is_audio = "음성만" in quality
@@ -3310,48 +3576,79 @@ class Api:
                 self._on_item_done(j, vid, fp, dims),
             on_status=lambda t, j=job_id: self._on_status(j, t),
         )
-        worker = threading.Thread(
-            target=self._run_download_worker, args=(job_id, dl, cfg),
-            name=f"download-{job_id}", daemon=True)
+        queued = False
         with self._state_lock:
             if self._closing or self._updating:
                 return {"ok": False, "error": "앱을 종료하는 중입니다"}
-            if job_id in self._active or len(self._active) >= MAX_ACTIVE_DOWNLOADS:
-                return {"ok": False, "error": "다운로드 작업 수 제한을 초과했습니다"}
-            self._active[job_id] = dl
-            self._workers[job_id] = worker
-            self._job_roots[job_id] = str(save_dir)
-            active_count = len(self._active)
-            self._js("setBusy(true)")
-            try:
-                worker.start()
-            except RuntimeError as e:
-                self._active.pop(job_id, None)
-                self._workers.pop(job_id, None)
-                self._job_roots.pop(job_id, None)
-                self._js("setBusy(false)")
-                log.exception("download worker start failed")
-                return {"ok": False, "error": f"다운로드 작업을 시작하지 못했습니다: {e}"}
+            if (job_id in self._active or job_id in self._files
+                    or any(q[0] == job_id for q in self._queued)):
+                return {"ok": False, "error": "이미 사용 중인 작업 식별자입니다"}
+            if len(self._active) >= MAX_ACTIVE_DOWNLOADS:
+                if len(self._queued) >= 200:
+                    return {"ok": False, "error": "대기 중인 작업이 너무 많습니다"}
+                self._queued.append((job_id, dl, cfg, str(save_dir)))
+                self._job_roots[job_id] = str(save_dir)
+                queued = True
+                active_count = len(self._active)
+                queued_count = len(self._queued)
+                self._js("setBusy(true)")
+            else:
+                try:
+                    self._launch_worker_locked(job_id, dl, cfg, str(save_dir))
+                except RuntimeError as e:
+                    if not self._active and not self._queued:
+                        self._js("setBusy(false)")
+                    log.exception("download worker start failed")
+                    return {"ok": False, "error": f"다운로드 작업을 시작하지 못했습니다: {e}"}
+                active_count = len(self._active)
+                queued_count = len(self._queued)
+                self._js("setBusy(true)")
+        if queued:
+            log.info("download queued id=%s url=%s (active=%d, queued=%d)",
+                     job_id, safe_url_for_log(url), active_count, queued_count)
+            return {"ok": True, "job_id": job_id, "queued": True}
         log.info("download start id=%s url=%s (active=%d)",
                  job_id, safe_url_for_log(url), active_count)
         return {"ok": True, "job_id": job_id}
 
     def cancel_download(self) -> None:
-        # 진행 중인 모든 다운로드를 취소한다(전체 취소 버튼).
+        # 진행 중 및 대기 중인 모든 다운로드를 취소한다(전체 취소 버튼).
         with self._state_lock:
             active = list(self._active.values())
+            queued = list(self._queued)
+            self._queued.clear()
+            for qid, _qdl, _qcfg, _qroot in queued:
+                if qid not in self._files:
+                    self._job_roots.pop(qid, None)
+            no_active = not self._active and not self._queued
+        for qid, qdl, _qcfg, _qroot in queued:
+            qdl.cancel()
+            self._on_done(qid, False, DOWNLOAD_CANCELLED)
         for dl in active:
             dl.cancel()
+        if no_active:
+            self._js("setBusy(false)")
 
     def forget_item(self, job_id: str) -> None:
-        """목록에서 항목 제거(X): 진행 중이면 취소(끝나면 _on_done 이 정리)."""
+        """목록에서 항목 제거(X): 대기열이면 즉시 제거, 진행 중이면 취소."""
         if not self._valid_job_id(job_id):
             return
+        removed_queued: Downloader | None = None
         with self._state_lock:
             dl = self._active.get(job_id)
+            if self._queued:
+                kept: deque[tuple[str, Downloader, DownloadConfig, str]] = deque()
+                for item in self._queued:
+                    if item[0] == job_id:
+                        removed_queued = item[1]
+                    else:
+                        kept.append(item)
+                self._queued = kept
             self._files.pop(job_id, None)
             self._job_roots.pop(job_id, None)
-            no_active = not self._active
+            no_active = not self._active and not self._queued
+        if removed_queued is not None:
+            removed_queued.cancel()
         if dl:
             dl.cancel()
         if no_active:
@@ -3391,22 +3688,15 @@ class Api:
         if path is None:
             self.open_folder()
             return
-        try:
-            windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
-            explorer = (windir / "explorer.exe").resolve(strict=True)
-            subprocess.run(
-                [str(explorer), f"/select,{os.path.normpath(str(path))}"],
-                shell=False, check=False, timeout=10,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+        if _reveal_in_explorer(path):
             return
-        except (OSError, subprocess.SubprocessError):
-            pass
         try:
             if path.parent.is_dir():
                 os.startfile(str(path.parent))  # type: ignore[attr-defined]  # noqa: S606
+                return
         except (OSError, AttributeError):
-            self.open_folder()
+            pass
+        self.open_folder()
 
     def play_item(self, job_id: str) -> None:
         if not self._valid_job_id(job_id):
@@ -3434,7 +3724,7 @@ class Api:
             if pub_release is None and decision is None:
                 return {"ok": False, "error": "업데이트 정보를 찾지 못했습니다"}
             # 설치는 앱을 종료시킨다 → 받는 중이거나 분석 중이면 끝난 뒤에 진행한다.
-            if self._active or self._analysis_active > 0:
+            if self._active or self._queued or self._analysis_active > 0:
                 return {"ok": False,
                         "error": "진행 중인 작업이 끝난 뒤에 업데이트해 주세요"}
             self._analysis_contexts.clear()

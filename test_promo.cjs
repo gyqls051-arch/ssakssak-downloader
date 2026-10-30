@@ -27,3 +27,15 @@ test('startup update modal shows 업데이트 해야합니다 prompt',()=>{
  assert.equal(elements.ovUpdate.classes.has('on'),true);
  assert.equal(elements.updModalVer.textContent,'v1.11.2');
 });
+test('safeImageUrl allows validated image data URIs and https thumbnails only',()=>{
+ const code=html.slice(html.indexOf('function safeImageUrl('),html.indexOf('function newJobId()'));
+ const ctx={URL};
+ vm.createContext(ctx);vm.runInContext(code,ctx);
+ assert.equal(ctx.safeImageUrl('data:image/jpeg;base64,/9j/4AAQ=='),'data:image/jpeg;base64,/9j/4AAQ==');
+ assert.equal(ctx.safeImageUrl('data:image/png;base64,iVBORw0KGgo='),'data:image/png;base64,iVBORw0KGgo=');
+ assert.equal(ctx.safeImageUrl('data:image/webp;base64,UklGRg=='),'data:image/webp;base64,UklGRg==');
+ assert.equal(ctx.safeImageUrl('https://cdn.example.com/thumb.jpg'),'https://cdn.example.com/thumb.jpg');
+ assert.equal(ctx.safeImageUrl('data:image/svg+xml;base64,PHN2Zz4='),'');
+ assert.equal(ctx.safeImageUrl('javascript:alert(1)'),'');
+ assert.equal(ctx.safeImageUrl('http://cdn.example.com/thumb.jpg'),'');
+});

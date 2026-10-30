@@ -896,3 +896,150 @@ def test_app_updater_uses_absolute_system_powershell(monkeypatch, tmp_path):
             "Status": "Valid", "Thumbprint": "A" * 40, "ProductVersion": "1.10"}))
     monkeypatch.setattr(main.subprocess, "run", run)
     main.AppUpdater._verify_windows_trust(tmp_path / "Setup.exe", "1.10")
+
+
+# -------- v1.11.4: 썸네일 / MP4 호환 변환 / 탐색기 선택 / 대기열 --------
+
+def test_video_analyzer_thumb_fetches_validated_data_uri(monkeypatch):
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01"
+
+    class _ThumbResp:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1): return self._payload[:n] if n >= 0 else self._payload
+
+    monkeypatch.setattr(main, "validate_public_http_url", lambda url, **kw: url)
+    monkeypatch.setattr(main, "_open_public_url",
+                        lambda req, timeout=0: _ThumbResp(jpeg_bytes))
+    uri = main.VideoAnalyzer._thumb({
+        "thumbnails": [
+            {"url": "http://insecure.example/t.jpg", "width": 480},
+            {"url": "https://cdn.example/t480.jpg", "width": 480},
+        ],
+    })
+    assert uri.startswith("data:image/jpeg;base64,")
+
+    # HTML/비이미지 응답은 거부한다.
+    monkeypatch.setattr(main, "_open_public_url",
+                        lambda req, timeout=0: _ThumbResp(b"<html>nope</html>"))
+    assert main.VideoAnalyzer._thumb({"thumbnail": "https://cdn.example/bad.jpg"}) == ""
+
+
+def test_ensure_mp4_compatible_converts_vp9_and_skips_clean_h264(monkeypatch, tmp_path):
+    ffmpeg_dir = tmp_path / "bin"
+    ffmpeg_dir.mkdir()
+    ffmpeg_name = "ffmpeg.exe" if main.sys.platform == "win32" else "ffmpeg"
+    (ffmpeg_dir / ffmpeg_name).write_bytes(b"MZ")
+
+    work = tmp_path / "work"
+    work.mkdir()
+    clip = work / "reel.mp4"
+    clip.write_bytes(b"vp9-raw")
+
+    dl = _dl()
+    dl._tmpdir = str(work)
+    cfg = DownloadConfig(
+        url="https://s.com/v", out_dir=str(tmp_path / "out"),
+        format_str="FMT", is_audio_only=False,
+        container="mp4", ffmpeg_dir=str(ffmpeg_dir),
+    )
+
+    # 1) 이미 깨끗한 H.264 + AAC-LC 면 재인코딩하지 않는다.
+    monkeypatch.setattr(
+        Downloader, "_inspect_mp4_streams",
+        staticmethod(lambda exe, m: ("h264", "aac", "Stream #0:1: Audio: aac (LC)", False)),
+    )
+    popen_calls: list[list[str]] = []
+    monkeypatch.setattr(main.subprocess, "Popen",
+                        lambda cmd, **kw: popen_calls.append(cmd))
+    dl._ensure_mp4_compatible(cfg)
+    assert popen_calls == []
+    assert clip.read_bytes() == b"vp9-raw"
+
+    # 2) VP9 / HE-AAC 스트림이면 libx264 + aac + +faststart 변환으로 교체한다.
+    monkeypatch.setattr(
+        Downloader, "_inspect_mp4_streams",
+        staticmethod(lambda exe, m: ("vp9", "aac", "Stream #0:1: Audio: aac (HE-AAC)", True)),
+    )
+
+    class _FakeProc:
+        def __init__(self, cmd):
+            popen_calls.append(cmd)
+            main.Path(cmd[-1]).write_bytes(b"h264-converted")
+            self.returncode = 0
+            self.stderr = None
+        def poll(self): return 0
+
+    monkeypatch.setattr(main.subprocess, "Popen", lambda cmd, **kw: _FakeProc(cmd))
+    dl._ensure_mp4_compatible(cfg)
+    assert len(popen_calls) == 1
+    assert "libx264" in popen_calls[0] and "+faststart" in popen_calls[0]
+    assert clip.read_bytes() == b"h264-converted"
+
+
+def test_open_item_falls_back_to_parent_folder_when_reveal_fails(monkeypatch, tmp_path):
+    media = tmp_path / "싹싹김치 다운로드" / "Video by orion_world.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"mp4")
+
+    api = main.Api.__new__(main.Api)
+    api._state_lock = main.threading.RLock()
+    job_id = "d" + "a" * 32
+    api._files = {job_id: str(media)}
+    api._job_roots = {job_id: str(media.parent)}
+
+    opened: list[str] = []
+    monkeypatch.setattr(main, "_reveal_in_explorer", lambda p: False)
+    monkeypatch.setattr(main.os, "startfile", lambda p: opened.append(p), raising=False)
+    api.open_item(job_id)
+    assert opened == [str(media.parent.resolve())]
+
+
+def test_start_download_queues_beyond_max_active_and_drains(monkeypatch, tmp_path):
+    import threading as _th
+
+    monkeypatch.setattr(main, "validate_public_http_url", lambda url, **kw: url)
+    gate = _th.Event()
+    ran: list[str] = []
+
+    def fake_run(self, cfg):
+        gate.wait(timeout=3.0)
+        ran.append(cfg.url)
+
+    monkeypatch.setattr(Downloader, "run", fake_run)
+
+    api = main.Api.__new__(main.Api)
+    api._window = None
+    api._closing = False
+    api._updating = False
+    api._state_lock = _th.RLock()
+    api._settings = Settings(tmp_path / "cfg.json")
+    api._cfg = {"save_dir": str(tmp_path / "out"), "cookie_opt_in": False}
+    api._ffmpeg_dir = str(tmp_path)
+    api._analysis_contexts = {}
+    api._files = {}
+    api._job_roots = {}
+    api._active = {}
+    api._queued = main.deque()
+    api._workers = {}
+
+    responses = []
+    for idx in range(5):
+        url = f"https://example.com/v{idx}"
+        tok = api._remember_analysis(url, None, 1080)
+        jid = f"d{idx:032x}"
+        res = api.start_download(jid, url, "1080p (FHD)", "MP4 (호환성 우선)", tok)
+        assert res["ok"] is True
+        responses.append(res)
+
+    assert sum(1 for r in responses if r.get("queued")) == 2
+    gate.set()
+    deadline = main.time.monotonic() + 3.0
+    while main.time.monotonic() < deadline:
+        with api._state_lock:
+            if not api._active and not api._queued:
+                break
+        main.time.sleep(0.02)
+    assert len(ran) == 5

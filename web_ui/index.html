@@ -111,7 +111,7 @@
   .row-meta{flex:none;font-size:11.5px;font-weight:600;white-space:nowrap}
   .row-acts{flex:none;display:flex;align-items:center;gap:3px}
   .act{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:5px;
-       border:none;background:transparent;color:#6B6B6F;cursor:default;font-family:inherit}
+       border:none;background:transparent;color:#6B6B6F;cursor:pointer;font-family:inherit}
   .act:hover{background:#E8E8EB}
   .act.x{color:#9A9A9E} .act.x:hover{background:#E8E8EB;color:var(--danger)}
 
@@ -126,8 +126,9 @@
   /* ── 상태바 ── */
   .statusbar{display:flex;align-items:center;justify-content:space-between;gap:14px;height:26px;
              padding:0 12px;background:#F0F0F1;border-top:1px solid #E2E2E5;flex:none}
-  .st-left{display:flex;align-items:center;gap:6px;min-width:0;cursor:default}
+  .st-left{display:flex;align-items:center;gap:6px;min-width:0;cursor:pointer}
   .st-left span{font-size:11.5px;color:#6B6B6F;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .st-left:hover span{color:var(--ink3);text-decoration:underline}
   .st-right{flex:none;font-size:11.5px;color:#6B6B6F;font-weight:600}
 
   /* ── 모달 ── */
@@ -514,8 +515,13 @@ function escapeHtml(value){
   }[c]));
 }
 function safeImageUrl(value){
+  const raw = String(value || '');
+  if(raw.length > 0 && raw.length <= 2200000 &&
+     /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(raw)){
+    return raw;
+  }
   try {
-    const u = new URL(String(value || ''));
+    const u = new URL(raw);
     return u.protocol === 'https:' && !u.username && !u.password ? u.href : '';
   } catch(e) { return ''; }
 }
@@ -961,7 +967,13 @@ function rowElement(j){
   const actions = document.createElement('div');
   actions.className = 'row-acts';
   if(j.status === 'done'){
-    actions.appendChild(actionButton('folder', j.id, '폴더 열기', '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>'));
+    thumb.style.cursor = 'pointer';
+    thumb.title = '재생';
+    thumb.onclick = () => api().play_item(j.id);
+    meta.style.cursor = 'pointer';
+    meta.title = '저장 폴더에서 파일 보기';
+    meta.onclick = () => api().open_item(j.id);
+    actions.appendChild(actionButton('folder', j.id, '저장 폴더에서 파일 보기', '<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>'));
     actions.appendChild(actionButton('play', j.id, '재생', '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>'));
   }
   const removeSvg = isActive(j)
