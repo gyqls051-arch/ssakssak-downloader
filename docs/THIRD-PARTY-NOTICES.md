@@ -29,6 +29,6 @@ Python: PSF License. PyInstaller bootloader에는 상용·독점 프로그램 �
 
 토큰 공급자: bundle-release-lock.json의 Node.js 22.19.0 및 bgutil 1.3.1 고정 커밋을 사용합니다. 런타임과 공급자의 자체 LICENSE/NOTICE는 potprovider 폴더에 보존됩니다. dev dependencies는 배포 번들에서 제외합니다.
 
-FFmpeg: autobuild-2026-10-23-13-04 / ffmpeg-N-127957-g935f29eaae-win64-gpl.zip; 앱 EXE에 링크하거나 포함하지 않고, 사용 시 공식 BtbN 고정 자산에서 검증 후 별도 프로그램으로 실행합니다. 정확한 upstream/build/source 정보: https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-23-13-04 . FFmpeg 저작권·GPL 및 대응 소스 조건은 해당 배포 원문을 따릅니다.
+FFmpeg: autobuild-2026-11-08-12-35 / ffmpeg-N-128691-gcc583787bb-win64-gpl.zip; 앱 EXE에 링크하거나 포함하지 않고, 사용 시 공식 FFmpeg-Builds 고정 자산에서 검증 후 별도 프로그램으로 실행합니다. 정확한 upstream/build/source 정보: https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/tag/autobuild-2026-11-08-12-35 . FFmpeg 저작권·GPL 및 대응 소스 조건은 해당 배포 원문을 따릅니다.
 
 UI WebView2: Microsoft Edge WebView2 Runtime을 사용하며 해당 런타임은 시스템 설치본을 이용합니다. 새 아이콘의 Lucide 원문 라이선스는 APP-ICON-LICENSE.txt에 있습니다.
