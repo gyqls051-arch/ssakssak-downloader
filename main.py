@@ -142,7 +142,7 @@ import publisher_update
 # ============================================================
 
 APP_TITLE = "싹싹김치 비디오 다운로더"
-APP_VERSION = "1.11.5"
+APP_VERSION = "1.11.6"
 # APP_ID 는 로그/ffmpeg 캐시/config.json 폴더 경로(%LOCALAPPDATA%\<APP_ID>)에
 # 쓰인다. 브랜드 식별자라 한 번 정하면 유지한다(바꾸면 기존 사용자 데이터 고아).
 APP_ID = "SsakSsakKimchiDownloader"
@@ -3696,8 +3696,13 @@ class Api:
             self._js("setBusy(false)")
 
     def pick_folder(self) -> str | None:
+        with self._state_lock:
+            start = Path(str(self._cfg.get("save_dir", self._default_dir())))
+        while not start.is_dir() and start.parent != start:
+            start = start.parent
         try:
-            res = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            res = self._window.create_file_dialog(
+                webview.FOLDER_DIALOG, directory=str(start))
         except Exception:
             return None
         if not res:
@@ -3708,6 +3713,15 @@ class Api:
         if not self._update_settings(save_dir=d):
             return None
         return d
+
+    def check_updates(self) -> bool:
+        """설정 창 '업데이트 확인' 버튼용 수동 체크.
+
+        새 버전이 발견되면 _check_for_updates 가 updateAvailable 팝업을 띄우고
+        True 를 돌려준다. 소스 실행은 서명된 설치본을 덮어쓸 수 없어 건너뛴다."""
+        if not getattr(sys, "frozen", False):
+            return False
+        return self._check_for_updates()
 
     def open_folder(self) -> None:
         with self._state_lock:

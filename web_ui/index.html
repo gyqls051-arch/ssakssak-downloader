@@ -425,6 +425,10 @@
           </span>
         </label>
       </div>
+      <div style="margin-top:18px;padding-top:15px;border-top:1px solid #EEF0F2;display:flex;align-items:center;justify-content:space-between">
+        <span style="font-size:12px;color:var(--muted2)">현재 버전 <b id="setVer" style="color:var(--ink3)"></b></span>
+        <button class="btn-sec" style="height:30px;padding:0 14px" onclick="checkUpdates()">업데이트 확인</button>
+      </div>
     </div>
     <div class="mfoot"><button class="btn-primary" onclick="closeSettings()">완료</button></div>
   </div>
@@ -564,6 +568,7 @@ async function boot(){
   S.init = await api().get_init();
   $('appTitle').textContent = S.init.app_title || '싹싹김치 비디오 다운로더';
   document.title = S.init.app_title || '싹싹김치 비디오 다운로더';
+  $('setVer').textContent = 'v' + (S.init.version || '');
   S.saveDir = S.init.save_dir || '';
   S.smart = localStorage.getItem('ssk_smart') === '1';
   if(!S.init.ffmpeg_ok) S.ffmpegMsg = '필요한 파일 준비 중…';
@@ -754,6 +759,10 @@ function openSettings(){
 }
 function closeSettings(){ $('ovSettings').classList.remove('on'); }
 async function pickFolder(){ const d = await api().pick_folder(); if(d){ S.saveDir = d; $('setPath').value = d; renderStatus(); } }
+async function checkUpdates(){
+  const found = await api().check_updates();
+  if(found) closeSettings(); else toast('최신 버전을 사용 중입니다');
+}
 async function setCookieOptIn(){
   const checkbox = $('setCookies');
   const requested = checkbox.checked === true;
