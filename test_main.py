@@ -342,7 +342,7 @@ def test_ffmpeg_replace_with_retry_handles_transient_av_lock(tmp_path, monkeypat
 def test_ffmpeg_static_pins_resolve_without_api(monkeypatch):
     tag = "autobuild-2026-08-30-12-34"
     name = "ffmpeg-pinned-win64-gpl.zip"
-    url = f"https://github.com/BtbN/FFmpeg-Builds/releases/download/{tag}/{name}"
+    url = f"https://github.com/{FfmpegInstaller.GITHUB_REPO}/releases/download/{tag}/{name}"
     monkeypatch.setattr(FfmpegInstaller, "RELEASE_TAG", tag)
     monkeypatch.setattr(FfmpegInstaller, "ASSET_NAME", name)
     monkeypatch.setattr(FfmpegInstaller, "URL", url)
