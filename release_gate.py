@@ -347,7 +347,7 @@ def _ffmpeg_pin_failures() -> list[str]:
             or Path(name).name != name):
         failures.append("main.py requires an exact FFmpeg ZIP asset name")
     expected_url = (
-        f"https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/{tag}/{name}"
+        f"https://github.com/gyqls051-arch/ssakssak-downloader/releases/download/{tag}/{name}"
     )
     if url != expected_url:
         failures.append("main.py FFmpeg URL must exactly match the immutable tag and asset")

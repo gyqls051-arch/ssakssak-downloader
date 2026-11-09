@@ -180,9 +180,10 @@ TRUSTED_UPDATE_HOSTS = frozenset({
 # FFmpeg는 배포 승인 때 immutable release tag/URL과 archive·추출 EXE의
 # size/SHA-256을 독립적으로 확인해 모두 채운다. 하나라도 비어 있으면 기존 cache를
 # 포함해 어떤 ffmpeg.exe도 실행하지 않는다. mutable "latest"는 허용하지 않는다.
-FFMPEG_RELEASE_TAG = "autobuild-2026-11-08-12-35"
+FFMPEG_RELEASE_TAG = "ffmpeg-mirror"
+FFMPEG_UPSTREAM_TAG = "autobuild-2026-11-08-12-35"
 FFMPEG_ASSET_NAME = "ffmpeg-N-128691-gcc583787bb-win64-gpl.zip"
-FFMPEG_ARCHIVE_URL = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/autobuild-2026-11-08-12-35/ffmpeg-N-128691-gcc583787bb-win64-gpl.zip"
+FFMPEG_ARCHIVE_URL = "https://github.com/gyqls051-arch/ssakssak-downloader/releases/download/ffmpeg-mirror/ffmpeg-N-128691-gcc583787bb-win64-gpl.zip"
 FFMPEG_ARCHIVE_SIZE = 201796363
 FFMPEG_ARCHIVE_SHA256 = "33c5d91e11daaae7ad057b98216bb918182d80396f51891c539aa1ab15cc6aa1"
 FFMPEG_EXECUTABLE_SIZE = 169953792
@@ -2726,14 +2727,14 @@ class FfmpegAsset:
 
 
 class FfmpegInstaller:
-    """독립 검토한 immutable FFmpeg-Builds archive에서 ffmpeg.exe를 설치한다.
+    """독립 검토한 upstream archive를 자체 릴리스에 미러해 거기서 ffmpeg.exe를 설치한다.
 
     release tag/URL, ZIP size/SHA-256, 추출 EXE size/SHA-256이 소스에 모두
     고정된 경우에만 앱 소유 cache를 사용한다. GitHub의 mutable ``latest`` API나
     로컬 PATH 바이너리는 신뢰하지 않으며, hash 검증 뒤에만 smoke test를 실행한다.
     """
 
-    GITHUB_REPO = "FFmpeg-Builds/FFmpeg-Builds"
+    GITHUB_REPO = GITHUB_RELEASE_REPO
     RELEASE_TAG = FFMPEG_RELEASE_TAG
     ASSET_NAME = FFMPEG_ASSET_NAME
     URL = FFMPEG_ARCHIVE_URL

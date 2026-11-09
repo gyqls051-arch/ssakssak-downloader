@@ -104,6 +104,29 @@ def smoke(source):
     print('Actual guarded network download -> consumer output -> FFmpeg decode PASS',media.stat().st_size)
 
 
+def mirror():
+    src=(ROOT/'main.py').read_text(encoding='utf-8')
+    tag=re.search(r'^FFMPEG_RELEASE_TAG = "([^"]+)"',src,re.M).group(1)
+    name=re.search(r'^FFMPEG_ASSET_NAME = "([^"]+)"',src,re.M).group(1)
+    up=re.search(r'^FFMPEG_UPSTREAM_TAG = "([^"]+)"',src,re.M).group(1)
+    size=int(re.search(r'^FFMPEG_ARCHIVE_SIZE = (\d+)',src,re.M).group(1))
+    sha=re.search(r'^FFMPEG_ARCHIVE_SHA256 = "([a-f0-9]{64})"',src,re.M).group(1)
+    out=subprocess.run(['gh','release','view',tag,'--repo',REPO,'--json','assets'],capture_output=True,text=True)
+    if out.returncode==0:
+        if any(a['name']==name for a in json.loads(out.stdout)['assets']):print('Already mirrored',name);return
+    else:
+        source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
+        run('gh','release','create',tag,'--repo',REPO,'--title','FFmpeg mirror','--notes','앱이 사용하는 고정 FFmpeg 자산의 자체 미러. 삭제하면 ffmpeg 설치가 깨지므로 지우지 않는다.','--latest=false','--target',source)
+    zip_path=ROOT/'build'/'ffmpeg-mirror'/name
+    have=zip_path.is_file() and zip_path.stat().st_size==size and hashlib.sha256(zip_path.read_bytes()).hexdigest()==sha
+    if not have:
+        zip_path.parent.mkdir(parents=True,exist_ok=True)
+        urllib.request.urlretrieve(f'https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/{up}/{name}',zip_path)
+        if zip_path.stat().st_size!=size or hashlib.sha256(zip_path.read_bytes()).hexdigest()!=sha:raise ValueError('Upstream FFmpeg asset does not match the pinned digest')
+    run('gh','release','upload',tag,str(zip_path),'--repo',REPO,'--clobber')
+    print('Mirrored FFmpeg asset',name,'->',tag)
+
+
 def sign():
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     import publisher_update as trust
@@ -215,10 +238,11 @@ def refresh():
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','smoke','sign','publish','refresh','resume']);p.add_argument('--force',action='store_true');p.add_argument('--source');p.add_argument('--run')
+    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','smoke','mirror','sign','publish','refresh','resume']);p.add_argument('--force',action='store_true');p.add_argument('--source');p.add_argument('--run')
     args=p.parse_args()
     if args.action=='prepare':prepare(args.force)
     elif args.action=='smoke':smoke(args.source)
+    elif args.action=='mirror':mirror()
     elif args.action=='sign':sign()
     elif args.action=='publish':publish()
     elif args.action=='refresh':refresh()

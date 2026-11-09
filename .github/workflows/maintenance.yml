@@ -51,6 +51,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.build == 'true'
     runs-on: windows-latest
+    permissions:
+      contents: write
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -76,6 +78,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest test_maintenance.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Mirror pinned FFmpeg asset to our release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python maintenance.py mirror
       - name: Real guarded download and decoded output
         run: python maintenance.py smoke --source '${{ needs.prepare.outputs.sha }}'
       - name: Prepare pinned runtime
