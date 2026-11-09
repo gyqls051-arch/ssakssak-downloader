@@ -1,4 +1,4 @@
 {
-  "latest_version": "1.11.6",
-  "release_notes": "설정 창에 현재 버전 표시·수동 업데이트 확인 추가 · 폴더 선택창이 현재 저장 위치에서 열리도록 개선"
+  "latest_version": "1.11.7",
+  "release_notes": "ffmpeg 다운로드를 자체 미러로 이전해 외부 자산 삭제로 인한 설치 실패 방지"
 }
