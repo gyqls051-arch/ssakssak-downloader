@@ -1,4 +1,4 @@
 {
-  "latest_version": "1.11.7",
+  "latest_version": "1.11.8",
   "release_notes": "ffmpeg 다운로드를 자체 미러로 이전해 외부 자산 삭제로 인한 설치 실패 방지"
 }
